@@ -500,3 +500,307 @@ public class AuctionsController(AuctionDbContext _context,IMapper _mapper): Cont
 
 
 ```
+
+### Adding a gitignore file 
+```shell
+ dotnet new gitignore
+
+```
+## Creating a Search Microservice
+- Creating a Search Service
+- Adding Mongo Db 
+- Adding Sync Communication between services
+- ![alt text](image-5.png)
+- ![alt text](image-7.png)
+- Elastic Search is a good option but it is complex to configure compared to MongoDb
+- However, if we want to replace MongoDb with Elastic Search in the future we can do it  
+- ![alt text](image-8.png)
+- ![alt text](image-9.png)
+- ![alt text](image-10.png)
+- We will install the MongoDb.Entities package
+- Then we will create an Item.cs file like this 
+```c#
+ using MongoDB.Entities;
+
+namespace SearchService.Models;
+
+//Already has Id object from Entity
+public class Item : Entity
+{
+    public int ReservePrice { get; set; } 
+    public string Seller { get; set; }
+    public string Winner { get; set; }
+    public int SoldAmount { get; set; }
+    public int CurrentHighBid { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; } 
+    public DateTime AuctionEnd { get; set; }
+    public string Status { get; set; }
+    public string Make { get; set; }
+    public string Model { get; set; }
+    public int Year { get; set; }
+    public string Color { get; set; }
+    public int Mileage { get; set; }
+    public string ImageUrl { get; set; }
+}
+
+```
+- We will create a DBInitializer file here also
+  ```c#
+     using System.Text.Json;
+    using MongoDB.Driver;
+    using MongoDB.Entities;
+    using SearchService.Models;
+
+    namespace SearchService.Data;
+
+    public class DbInitializer
+    {
+        public static async Task InitDb(WebApplication app)
+        {
+            //Here DB comes from MongoDb.Entities
+            await DB.InitAsync("SearchDb",MongoClientSettings
+            .FromConnectionString(app.Configuration.GetConnectionString("MongoDbConnection")));
+            await DB.Index<Item>()
+            .Key(x => x.Make, KeyType.Text) //We make indexes here so that we can carry out search over them
+            .Key(x => x.Model, KeyType.Text)
+            .Key(x => x.Color, KeyType.Text)
+            .CreateAsync();
+
+            var count = await DB.CountAsync<Item>();
+            if (count == 0)
+            {
+            Console.WriteLine("No data will attempt to seed");
+            var itemData = await File.ReadAllTextAsync("Data/auctions.json");
+            var options = new JsonSerializerOptions{PropertyNameCaseInsensitive = true };
+            var items = JsonSerializer.Deserialize<List<Item>>(itemData, options);
+            await DB.SaveAsync(items);
+            }
+        }
+    }
+
+
+  ```
+  - We will create a separate auctions.json file to seed data
+  - We will call the DBInitializer in Program.cs file 
+  ```c#
+    try
+    {
+        await DbInitializer.InitDb(app);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine(ex);
+    }
+
+  ```
+
+  ## Implementing the Search Controller
+  - First we will create a file SearchParams.cs:
+  ```c#
+  namespace SearchService.RequestHelpers;
+
+    public class SearchParams
+    {
+        public string SearchTerm { get; set; }
+        public int PageSize { get; set; } = 4;
+        public int PageNumber { get; set; } = 1;
+        public string Seller { get; set; }
+        public string Winner { get; set; }
+        public string OrderBy { get; set; }
+        public string FilterBy { get; set; }
+    }
+
+  ```
+  - Next we will create our Search functionality inside the SearchController.cs file like this 
+  ```c#
+  using Microsoft.AspNetCore.Mvc;
+  using MongoDB.Entities;
+  using SearchService.Models;
+  using SearchService.RequestHelpers;
+
+  namespace SearchService.Controllers;
+
+  [ApiController]
+  [Route("api/search")]
+   public class SearchController : ControllerBase
+  {
+       [HttpGet]
+       public async Task<ActionResult<List<Item>>> SearchItems([FromQuery] SearchParams searchParams)
+     {
+        var query = DB.PagedSearch<Item,Item>();
+        if (!string.IsNullOrEmpty(searchParams.SearchTerm))
+        {
+            query.Match(Search.Full, searchParams.SearchTerm).SortByTextScore();
+        }
+        
+        //Add Sorting
+        query = searchParams.OrderBy switch
+        {
+            "make" => query.Sort(x => x.Ascending(a => a.Make)),
+            "new" => query.Sort(x => x.Descending(a => a.CreatedAt)),
+            _ => query.Sort(x => x.Ascending(a => a.AuctionEnd)),
+        };
+        
+        //Add Filtering
+        query = searchParams.FilterBy switch
+        {
+            "finished" => query.Match(x => x.AuctionEnd < DateTime.UtcNow),
+            "endingSoon" => query.Match(x => x.AuctionEnd > DateTime.UtcNow.AddHours(6)
+                                             && x.AuctionEnd > DateTime.Now),
+            _ => query.Match(x => x.AuctionEnd > DateTime.UtcNow)
+        };
+
+        if (!string.IsNullOrEmpty(searchParams.Seller))
+        {
+            query.Match(x => x.Seller == searchParams.Seller);
+        }
+        
+        if (!string.IsNullOrEmpty(searchParams.Winner))
+        {
+            query.Match(x => x.Winner == searchParams.Winner);
+        }
+        
+        // Page the results
+        query.PageNumber(searchParams.PageNumber);
+        query.PageSize(searchParams.PageSize);
+        var result = await query.ExecuteAsync();
+        return Ok(new
+        {
+            results = result.Results,
+            pageCount = result.PageCount,
+            totalCount = result.TotalCount
+        });
+     }
+  }
+
+  ```
+
+  ## Microservices Messaging
+  - How do we communicate between AuctionService and SearchService ?
+  - First we will start with Synchronous Communication 
+  - Synchronous Messaging is only 2 types: HTTP and gRPC
+  - ![alt text](image-11.png)
+  - This creates dependency between Service A and Service B
+  - If Service B goes down, Service A also goes down, this approach makes the services dependent not independent.
+  - Here Service A needs to know address of Service B, what if there are 100 services? Who is going to manage the addresses. There are tools like service discovery like Consul, Eureka 
+  - HTTP is a synchronous type of external communication.
+  - If a browser makes a request to HTTP endpoint it is going to wait for the response.
+  - Internally though it uses async/await.
+  - In the messaging world, the client has to wait for response = synchronous.
+  - ![alt text](image-12.png)
+  - This is also called a distributed monolith.
+  - What is Service B needed to get data from Service C
+  - This can lead to dependency chains.
+  - In asynchronous messaging we use a Service Bus 
+  - ![alt text](image-13.png)
+
+## Adding HTTP Communication to get the Data
+- To call the Auction Service from Search Service, we have to make a few changes
+- Changes to the Auction Service are as follows 
+```c#
+ [HttpGet]
+    public async Task<ActionResult<List<AuctionDto>>> GetAllAuctions(string date)
+    {
+        var query = _context.Auctions.OrderBy(x=>x.Item.Make).AsQueryable();
+
+        if (!string.IsNullOrEmpty(date))
+        {
+            query = query.Where(x=>x.UpdatedAt.CompareTo(DateTime.Parse(date).ToUniversalTime())>0);
+        }
+        
+        return await query.ProjectTo<AuctionDto>(_mapper.ConfigurationProvider).ToListAsync();
+    }
+
+```
+
+- Changes to Search Service as as follows:
+- We will create an Auction Service Http Client file as follows:
+```c#
+ public class AuctionServiceHttpClient(HttpClient httpClient,IConfiguration config)
+{
+    public async Task<List<Item>> GetItemsForSearchDb()
+    {
+        var lastUpdated = await DB.Find<Item, string>()
+            .Sort(x => x.Descending(x => x.UpdatedAt))
+            .Project(x => x.UpdatedAt.ToString())
+            .ExecuteFirstAsync();
+        
+        return await httpClient
+            .GetFromJsonAsync<List<Item>>
+            (config["AuctionServiceUrl"] +"/api/auctions?date="+lastUpdated);
+    }
+}
+
+```
+- We will register it inside Program.cs as follows:
+  ```c#
+  builder.Services
+    .AddHttpClient<AuctionServiceHttpClient>()
+
+  ```
+- We will call it from the DBInitializer as follows:
+```c#
+ public class DbInitializer
+{
+    public static async Task InitDb(WebApplication app)
+    {
+        await DB.InitAsync("SearchDb",MongoClientSettings
+            .FromConnectionString(app.Configuration.GetConnectionString("MongoDbConnection")));
+        await DB.Index<Item>()
+            .Key(x => x.Make, KeyType.Text)
+            .Key(x => x.Model, KeyType.Text)
+            .Key(x => x.Color, KeyType.Text)
+            .CreateAsync();
+
+        var count = await DB.CountAsync<Item>();
+     
+        
+        using var scope = app.Services.CreateScope();
+        var httpClient = scope.ServiceProvider.GetRequiredService<AuctionServiceHttpClient>();
+        var items = await httpClient.GetItemsForSearchDb();
+        Console.WriteLine($"Found {items.Count} items");
+        if (items.Any())
+        {
+            await DB.SaveAsync(items);
+        }
+    }
+}
+
+```
+
+## Making our Http Client Resilient
+- To make our AuctionServiceHttpClient resilient we will need to use Microsoft.Extensions.Polly nuget package 
+- Lets assume that Auction Service goes down. We want the Search Service which is querying the auction service using AuctionServiceHttpClient to not go down as well 
+- We want to make sure that the Search Service keeps trying to connect to Auction Service at regular intervals
+- Using this package we will need to make a Retry Policy as follows :
+```c#
+static IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
+    => HttpPolicyExtensions
+        .HandleTransientHttpError()
+        .OrResult(msg => msg.StatusCode == System.Net.HttpStatusCode.NotFound)
+        .WaitAndRetryForeverAsync(_ => TimeSpan.FromSeconds(3));
+
+```
+- Then inside our Program.cs file we need to attach this retry policy to our HttpClient as follows: 
+```c#
+  builder.Services
+    .AddHttpClient<AuctionServiceHttpClient>()
+    .AddPolicyHandler(GetRetryPolicy());
+
+```
+- We also want this data seeding operation to run once the SearchService application has started. For this we can write the following code in Program.cs 
+```c#
+ app.Lifetime.ApplicationStarted.Register(async () =>
+{
+    try
+    {
+        await DbInitializer.InitDb(app);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine(ex);
+    }
+});
+
+```
