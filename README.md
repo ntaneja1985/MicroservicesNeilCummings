@@ -804,3 +804,421 @@ static IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
 });
 
 ```
+
+## Using RabbitMQ
+- ![alt text](image-14.png)
+- We prefer the asynchronous approach
+- ![alt text](image-15.png)
+- In Asynchronous messaging there is no request/response 
+- It is Fire and Forget 
+- It uses an event model(publish/subscribe)
+- It is used for service to service messaging
+- Transports(RabbitMq, Azure Service Bus, Amazon SQS)
+- Services only need to know about the bus 
+- It is more complex than synchronous messaging.
+- Service bus must be clustered, fault tolerant and it must have persistent storage to store messages.
+- RabbitMq is a message broker. It accepts and forwards messages. 
+- It uses the Producer/Consumer Model(Pub/Sub)
+-  Messages are stored on queues(It uses a message buffer)
+-  RabbitMq also has persistence associated with it, so that if RabbitMq service fails and we need to create a new one in its place, then we can use persistent storage to restore messages. 
+### Rabbit Mq Exchanges 
+-  Rabbit Mq uses Exchanges and Exchanges can be used for "routing" functionality. 
+-  When we publish a message, we send it to an exchange, and exchanges have queues that are bound to it. 
+-  RabbitMq uses AMQP(Advanced Message Queuing protocol)
+-  ![alt text](image-16.png)
+-  Direct Exchange: Delivers messages to queues based on a routing key. (Can only route to a single queue)
+-  Fanout: Exchange has multiple queues and it waits for a consumer to pick it up 
+-  ![alt text](image-17.png)
+-  Topic Exchange: Routes messages to one or more queues based on its routing key. It is similar to Direct exchange but the same routing key can be used to go to more than one queue 
+-  ![alt text](image-18.png)
+-  Header Exchange: Allows us to specify a header with the message that the exchange can use to publish it to various multiple queues, one or more queues. It is not used much
+-  ![alt text](image-19.png)
+## MassTransit 
+- Provides an abstraction over various transports
+- ![alt text](image-20.png)
+- Setup rabbitMq using docker compose like this:
+```shell 
+services:
+  postgres:
+    image: postgres
+    environment:
+      - POSTGRES_PASSWORD=postgrespw
+    ports:
+      - 5432:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  mongodb:
+    image: mongo
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=mongopw
+    ports:
+      - 27017:27017
+    volumes:
+      - mongodata:/data/db
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - 5672:5672
+      - 15672:15672
+volumes:
+  pgdata:
+  mongodata:
+
+```
+
+## Configuring Mass Transit to use RabbitMq inside Auction Service and Search Service 
+- We need to install MassTransit.RabbitMq nuget package and set it up inside the Program.cs file of AuctionService and SearchService
+- Inside Auction Service as follows:
+```c#
+builder.Services.AddMassTransit(x =>
+{
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.ConfigureEndpoints(context);
+    });
+});
+
+```
+- Inside Search Service as follows:
+```c#
+builder.Services.AddMassTransit(x =>
+{
+    //Add Consumers
+    x.AddConsumersFromNamespaceContaining<AuctionCreatedConsumer>();
+    //Set up the formatters to display queue names
+    x.SetEndpointNameFormatter(new KebabCaseEndpointNameFormatter("search",false));
+    
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.ConfigureEndpoints(context);
+    });
+});
+
+```
+- In our architecture, the auction service will publish messages and search service will consume messages.
+- We will create a separate class library called Contracts and add its references to both Auction Service and Search Service
+- This class library will contain the objects that will be published and consumed
+- These objects will be AuctionCreated, AuctionUpdated and AuctionDeleted
+- To add a reference to the class library inside both Auction Service and Search Service we will use these commands:
+```shell
+//Go to the Auction Service directory
+dotnet add reference ../../src/Contracts
+
+```
+- We will need to setup consumers inside the SearchService as follows:
+```c#
+using AutoMapper;
+using Contracts;
+using MassTransit;
+using MongoDB.Entities;
+using SearchService.Models;
+
+namespace SearchService.Consumers;
+
+public class AuctionCreatedConsumer(IMapper mapper): IConsumer<AuctionCreated>
+{
+    public async Task Consume(ConsumeContext<AuctionCreated> context)
+    {
+        Console.WriteLine("-->Consuming Auction Created:"+context.Message.Id);
+        var item = mapper.Map<Item>(context.Message);
+        await item.SaveAsync();
+    }
+}
+
+```
+- Once we have added consumers in the Search Service, we need to inform MassTransit about these consumers.
+- This can be done in Program.cs file using the following code:
+```c#
+builder.Services.AddMassTransit(x =>
+{
+    //Add Consumers
+    x.AddConsumersFromNamespaceContaining<AuctionCreatedConsumer>();
+}
+
+```
+
+## Publishing the Messages from the Auction Service 
+- We will use the IPublishEndpoint provided by MassTransit to publish messages to rabbitMq within the Auction Service 
+- For e.g here we are publishing AuctionCreated Message on successful auction creation.
+  
+```c#
+
+public class AuctionsController(AuctionDbContext _context,IMapper _mapper, IPublishEndpoint publishEndpoint): ControllerBase
+{
+[HttpPost]
+
+
+    public async Task<ActionResult<AuctionDto>> CreateAuction(CreateAuctionDto auctionDto)
+    {
+        var auction = _mapper.Map<Auction>(auctionDto);
+        //TODO: add current user as seller
+        auction.Seller = "test";
+        _context.Auctions.Add(auction);
+        var result = await _context.SaveChangesAsync() > 0;
+
+        var newAuction = _mapper.Map<AuctionDto>(auction);
+        
+        await publishEndpoint.Publish(_mapper.Map<AuctionCreated>(newAuction));
+        
+        if(!result) return BadRequest("could not create auction");
+        return CreatedAtAction(nameof(GetAuctionById),
+            new { id = auction.Id }, newAuction);
+    }
+
+}
+
+```
+
+## Possible issues with Asynchronous Communication 
+- In a monolith ACID is maintained within transactions:
+- ![alt text](image-21.png)
+- If we are updating 2 tables at the same time, either all will be updated successfully or none will be updated to maintain ACID principles.
+- But in microservices, things are different. 
+- ![alt text](image-22.png)
+- What if any of the services are down?
+- ![alt text](image-23.png)
+- ![alt text](image-24.png)
+- Data Inconsistency is one of the main challenges with microservices.
+- One of the popular solutions to solve this is using the Outbox pattern.
+- If the RabbitMq is down, our messages are saved to an outbox and retried at regular intervals. 
+
+## Outbox Pattern 
+- If our services are running but RabbitMq is down, it may result in the data across our services to be inconsistent. 
+- To solve this we need to use Outbox pattern where when we publish our messages we will first save them to an OutboxMessage table 
+- When RabbitMq comes back up we will push these messages from the outbox table to the rabbitMq to be consumed by the Search Service. 
+- MassTransit library helps us to setup this outbox pattern quite easily. 
+- We will first add a nuget package: MassTransit.EntityFrameworkCore 
+- Then we will configure MassTransit inside Program.cs file of AuctionService as follows: 
+  ```c#
+  builder.Services.AddMassTransit(x =>
+  {
+    x.AddEntityFrameworkOutbox<AuctionDbContext>(opt =>
+    {
+        opt.QueryDelay = TimeSpan.FromSeconds(10);
+        opt.UsePostgres();
+        opt.UseBusOutbox();
+    });
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.ConfigureEndpoints(context);
+    });
+  });
+
+  ```
+- Now we will override the OnModelCreating method inside the AuctionDbContext to add the Inbox,Outbox message and state entity .
+```c#
+using AuctionService.Entities;
+using MassTransit;
+using Microsoft.EntityFrameworkCore;
+
+namespace AuctionService.Data;
+
+public class AuctionDbContext : DbContext
+    {
+    public AuctionDbContext(DbContextOptions options): base(options)
+    {
+        
+    }
+    
+    public DbSet<Auction> Auctions { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        
+        //Responsible for implementing outbox functionality
+        modelBuilder.AddInboxStateEntity();
+        modelBuilder.AddOutboxMessageEntity();
+        modelBuilder.AddOutboxStateEntity();
+    }
+}
+
+```
+- Now we will run the migrations and it will create migrations to create the InboxState, OutboxState and OutboxMessage tables. 
+- Now if the rabbitMq is down, then OutboxMessage table is populated and when RabbitMq comes backup the table will push the data to the RabbitMq and clear itself. 
+
+
+## Using message retries 
+- Consider the situation when database of the consumer is down.
+- In our case, let us assume MongoDb is down for the SearchService.
+- The search service will consume the messages from the rabbitMq but will not able to save them to the database due to it being down. 
+- We should have a policy to retry to fetch and save the messages at regular intervals. 
+- We can do this using the following configuration inside our Program.cs file like this: 
+```c#
+ builder.Services.AddMassTransit(x =>
+{
+    //Add Consumers
+    x.AddConsumersFromNamespaceContaining<AuctionCreatedConsumer>();
+    //Set up the formatters to display queue names
+    x.SetEndpointNameFormatter(new KebabCaseEndpointNameFormatter("search",false));
+    
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.ReceiveEndpoint("search-auction-created", e =>
+        {
+            e.UseMessageRetry(r => r.Interval(5,5));
+            e.ConfigureConsumer<AuctionCreatedConsumer>(context);
+        });
+        cfg.ConfigureEndpoints(context);
+    });
+});
+
+```
+- Now in this case, it will keep trying to consume from this queue(or endpoint) for total 5 times every 5 seconds. 
+
+## Consuming Fault Queues 
+- If we go to RabbitMq, after our database was down, we see some additional queues being added 
+- ![alt text](image-25.png)
+- If we go to one of these queues like search-auction-created_error we see messages like this: 
+- ![alt text](image-26.png)
+- These are error messages generated by the consumer when the MongoDb database was down. 
+- These specialty queues are known as Fault Queues. 
+- We should be able to consume these fault queue messages and do something about them
+- First let us generate an exception in our consumer like this 
+```c#
+ public class AuctionCreatedConsumer(IMapper mapper): IConsumer<AuctionCreated>
+{
+    public async Task Consume(ConsumeContext<AuctionCreated> context)
+    {
+        Console.WriteLine("-->Consuming Auction Created:"+context.Message.Id);
+        var item = mapper.Map<Item>(context.Message);
+        
+        if (item.Model == "Foo") throw new ArgumentException("Cannot see cars with name of Foo");
+        
+        await item.SaveAsync();
+    }
+}
+
+```
+- Now we will create another consumer inside the Auction Service to handle these exceptions, correct the data and publish again 
+- Go to AuctionService and create an AuctionCreatedFaultConsumer class 
+```c#
+  using Contracts;
+using MassTransit;
+
+namespace AuctionService.Consumers;
+
+public class AuctionCreatedFaultConsumer:IConsumer<Fault<AuctionCreated>>
+{
+    public async Task Consume(ConsumeContext<Fault<AuctionCreated>> context)
+    {
+        Console.WriteLine("-->Consuming Faulty Creation");
+        var exception = context.Message.Exceptions.First();
+        if (exception.ExceptionType == "System.ArgumentException")
+        {
+            context.Message.Message.Model = "FooBar";
+            await context.Publish(context.Message.Message);
+        }
+        else
+        {
+            Console.WriteLine("Not an argument exception update error dashboard somewhere");
+        }
+    }
+}
+
+
+```
+- In the above code, it will consume the fault queue for Auction Created and if it detects an argument exception, it will modify the data and publish it again. 
+- We will configure this new consumer inside Program.cs file of Auction Service as follows: 
+```c#
+ x.AddConsumersFromNamespaceContaining<AuctionCreatedFaultConsumer>();
+    x.SetEndpointNameFormatter(new KebabCaseEndpointNameFormatter("auction",false));
+
+```
+
+## Adding the Update and Delete Consumers 
+
+```c#
+
+//Publishing Auction Updated and Auction Deleted Messages from the Auction Service Controller
+
+    [HttpPut("{id}")]
+    public async Task<ActionResult> UpdateAuction(Guid id, UpdateAuctionDto updatedAuctionDto)
+    {
+        var auction = await _context.Auctions
+            .Include(x => x.Item)
+            .FirstOrDefaultAsync(x => x.Id == id);
+        if (auction == null)
+        {
+            return NotFound();
+        }
+        //TODO: check seller == username
+        
+        auction.Item.Make = updatedAuctionDto.Make ?? auction.Item.Make;
+        auction.Item.Model = updatedAuctionDto.Model ?? auction.Item.Model;
+        auction.Item.Color = updatedAuctionDto.Color ?? auction.Item.Color;
+        auction.Item.Mileage = updatedAuctionDto.Mileage ?? auction.Item.Mileage;
+        auction.Item.Year = updatedAuctionDto.Year ?? auction.Item.Year;
+        
+        await publishEndpoint.Publish(_mapper.Map<AuctionUpdated>(auction));
+        var result = await _context.SaveChangesAsync() > 0;
+        if(!result) return BadRequest("could not update auction");
+        return Ok();
+    }
+
+    [HttpDelete("{id}")]
+    public async Task<ActionResult> DeleteAuction(Guid id)
+    {
+        var auction = await _context.Auctions.FindAsync(id);
+        if (auction == null)
+        {
+            return NotFound();
+        }
+        
+        //TODO: check seller == username
+        _context.Auctions.Remove(auction);
+        await publishEndpoint.Publish<AuctionDeleted>(new {Id = auction.Id.ToString()});
+        var result = await _context.SaveChangesAsync() > 0;
+        if(!result) return BadRequest("could not delete auction");
+        return Ok();
+    }
+
+
+//Consuming the Auction Updated and Auction Deleted Messages inside the Search Service
+
+public class AuctionUpdatedConsumer(IMapper mapper): IConsumer<AuctionUpdated>
+{
+    public async Task Consume(ConsumeContext<AuctionUpdated> context)
+    {
+        Console.WriteLine("-->Consuming Auction Updated: "+context.Message.Id);
+        var item = mapper.Map<Item>(context.Message);
+        
+        var result = await DB.Update<Item>()
+            .Match(a=>a.ID == context.Message.Id)
+            .ModifyOnly(x =>new
+            {
+                x.Color,
+                x.Make,
+                x.Model,
+                x.Year,
+                x.Mileage
+            },item)
+            .ExecuteAsync();
+
+        if (!result.IsAcknowledged)
+        {
+            throw new MessageException(typeof(AuctionUpdated), "Problem updating mongodb");
+        }
+    }
+}
+
+
+public class AuctionDeletedConsumer(IMapper mapper): IConsumer<AuctionDeleted>
+{
+    public async Task Consume(ConsumeContext<AuctionDeleted> context)
+    {
+        Console.WriteLine("-->Consuming Auction Deleted:"+context.Message.Id);
+        
+        var result = await DB.DeleteAsync<Item>(context.Message.Id);
+        if (!result.IsAcknowledged)
+        {
+            throw new MessageException(typeof(AuctionDeleted),"Problem deleting auction");
+        }
+    }
+}
+
+
+```
+
+
