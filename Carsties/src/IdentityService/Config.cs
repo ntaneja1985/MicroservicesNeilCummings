@@ -30,6 +30,21 @@ public static class Config
                 RedirectUris = {"https://www.getpostman.com/oauth2/callback"},
                 ClientSecrets = new [] {new Secret("NotASecret".Sha256())},
                 AllowedGrantTypes = { GrantType.ResourceOwnerPassword }
+            },
+            new Client
+            {
+                ClientId = "nextApp",
+                ClientName = "nextApp",
+                ClientSecrets = { new Secret("secret".Sha256()) },
+                //ID Token and Access Token can be shared without any browser involvement
+                AllowedGrantTypes = GrantTypes.CodeAndClientCredentials,
+                //Pkce is required in case of mobile applications not for web applications
+                RequirePkce = false,
+                RedirectUris = {"http://localhost:3000/api/auth/callback/id-server"},
+                //Allows us to use Refresh Token Functionality
+                AllowOfflineAccess = true,
+                AllowedScopes = {"openid", "profile","auctionApp"},
+                AccessTokenLifetime = 3600*24*30
             }
             
             // m2m client credentials flow client

@@ -1712,4 +1712,377 @@ app.UseAuthorization()
 
 ## Adding a Gateway Service 
 - We want to provide a single access point into our API Services.
-  
+- ![alt text](image-46.png)
+- Options of YARP, Ocelot
+- ![alt text](image-47.png)
+- ![alt text](image-48.png)
+- Proxy sits in front of a client browser. 
+- Reverse proxy sits in front of a bunch of backend servers.
+- We usually have reverse proxy for microservices 
+- It provides a single surface area for requests. Client only needs to know one URL to get to our backend (our gateway address)
+- Client is unaware of any internal services
+- This gateway can also be used for security. We can check authentication on gateway side of things. 
+- We use it for SSL termination. 
+- We can also use it for URL rewriting. 
+- We can also use it for Load Balancing.
+- It can also be used for caching. When response comes from backend service, we can cache the response also. 
+
+## Setting up the Reverse Proxy(YARP)
+- Add an empty ASP.NET Core Project to our solution 
+```shell
+ dotnet new web -o src/GatewayService
+ dotnet sln add src/GatewayService
+
+```
+- Add couple of nuget packages to this project
+```c#
+<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.12" />
+<PackageReference Include="Yarp.ReverseProxy" Version="2.2.0" />
+
+```
+- We will setup a configuration file for all the routes of this reverse proxy. 
+- However, we will specify that in the Program.cs file 
+```c#
+ var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddReverseProxy()
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+
+var app = builder.Build();
+
+app.MapReverseProxy();
+
+app.Run();
+
+
+```
+- Reverse proxy needs a configuration file so that as it receives a request from the client it knows what to do with those requests.
+- Whether, we need to transform that request in some way, whether that request needs authentication
+- It can also take a look at the method coming in to the proxy server whether it is a GET/PUT/POST,DELETE etc 
+- ![alt text](image-49.png)
+- We can add a config file as follows: 
+- Routes: Define how incoming requests should be matched and routed.
+- Clusters: Specify destination servers (addresses) that your proxy should forward requests to.
+```json 
+ {
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Information"
+    }
+  },
+  "ReverseProxy": {
+    "Routes": {
+      "auctions": {
+        "ClusterId": "auctions",
+        "Match": {
+          "Path": "/auctions/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/auctions/{**catch-all}"
+          }
+        ]
+      },
+      "search": {
+        "ClusterId": "search",
+        "Match": {
+          "Path": "/search/{**catch-all}",
+          "Methods": ["GET"]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/search/{**catch-all}"
+          }
+        ]
+      }
+    },
+    "Clusters": {
+      "auctions": {
+        "Destinations": {
+          "auctionApi": {
+            "Address": "http://localhost:7001"
+          }
+        }
+      },
+      "search": {
+        "Destinations": {
+          "searchApi": {
+            "Address": "http://localhost:7002"
+          }
+        }
+      }
+    }
+  }
+}
+
+
+```
+- Load Balancing: Adjust your appsettings.json to include load balancing strategies:
+```json 
+ "Clusters": {
+  "cluster1": {
+    "Destinations": {
+      "destination1": { "Address": "https://example.com/" },
+      "destination2": { "Address": "https://anotherexample.com/" }
+    },
+    "LoadBalancingPolicy": "RoundRobin"
+  }
+}
+
+
+```
+- Session Affinity: Ensure sticky sessions to a particular server:
+```json 
+  "Clusters": {
+  "cluster1": {
+    "Destinations": { "destination1": { "Address": "https://example.com/" } },
+    "SessionAffinity": {
+      "Enabled": true,
+      "Policy": "Cookie",
+      "FailurePolicy": "Return503Error",
+      "Settings": {
+        "AffinityKeyName": "Yarp.Session"
+      }
+    }
+  }
+}
+
+
+
+```
+- Retries: Set up retries for request failures:
+```json 
+ "Clusters": {
+  "cluster1": {
+    "Destinations": {
+      "destination1": { "Address": "https://example.com/" }
+    },
+    "HttpClient": {
+      "MaxRetries": 3,
+      "RequestTimeout": "00:00:30"
+    }
+  }
+}
+
+
+```
+- 
+
+## Adding authentication to our Gateway configuration
+- If we know that the path of the request needs to be authenticated, then we can stop the user at the gateway 
+- ![alt text](image-50.png)
+- Please note Identity Service lives outside our Gateway and Resource Apis(auction, search etc)
+- Incoming requests will be authenticated via JWT tokens, and authorized users will be able to access the secured routes
+- This setup ensures that only authenticated users can reach the backend services
+- We will have the following configuration inside our appsettings.Development.json file
+- In the below configuration all GET requests to the auction Service are not authenticated. 
+- However all POST requests are authenticated with authorization policy of default.  
+```json 
+  {
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Information"
+    }
+  },
+  "IdentityServiceUrl": "http://localhost:5000",
+  "ReverseProxy": {
+    "Routes": {
+      "auctionsRead": {
+        "ClusterId": "auctions",
+        "Match": {
+          "Path": "/auctions/{**catch-all}",
+          "Methods": ["GET"]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/auctions/{**catch-all}"
+          }
+        ]
+      },
+      "auctionsWrite": {
+        "ClusterId": "auctions",
+        "AuthorizationPolicy": "default",
+        "Match": {
+          "Path": "/auctions/{**catch-all}",
+          "Methods": ["POST","PUT","DELETE"]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/auctions/{**catch-all}"
+          }
+        ]
+      },
+      "search": {
+        "ClusterId": "search",
+        "Match": {
+          "Path": "/search/{**catch-all}",
+          "Methods": ["GET"]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/search/{**catch-all}"
+          }
+        ]
+      }
+    },
+    "Clusters": {
+      "auctions": {
+        "Destinations": {
+          "auctionApi": {
+            "Address": "http://localhost:7001"
+          }
+        }
+      },
+      "search": {
+        "Destinations": {
+          "searchApi": {
+            "Address": "http://localhost:7002"
+          }
+        }
+      }
+    }
+  }
+}
+
+
+
+```
+- We will have to add Authentication in the middleware pipeline for Gateway Service 
+- Here is the code in Program.cs file 
+```c#
+ using Microsoft.AspNetCore.Authentication.JwtBearer;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddReverseProxy()
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(opt =>
+    {
+        opt.Authority = builder.Configuration["IdentityServiceUrl"];
+        opt.RequireHttpsMetadata = false;
+        opt.TokenValidationParameters.ValidateAudience = false;
+        opt.TokenValidationParameters.NameClaimType = "username";
+    });
+
+var app = builder.Build();
+
+app.MapReverseProxy();
+app.UseAuthentication();
+app.UseAuthorization();
+app.Run();
+
+
+```
+
+## Create couple of more consumers 
+- We will add 2 consumers(Auction Finished and Bid Placed) inside the Auction Service 
+
+```c#
+//Auction Finished Consumer 
+ public class AuctionFinishedConsumer(AuctionDbContext auctionDbContext):IConsumer<AuctionFinished>
+{
+    public async Task Consume(ConsumeContext<AuctionFinished> context)
+    {
+        Console.WriteLine("-->Consuming Auction Finished");
+        var auction = await auctionDbContext.Auctions.FindAsync(context.Message.AuctionId);
+        if (context.Message.ItemSold)
+        {
+            auction.Winner = context.Message.Winner;
+            auction.SoldAmount = context.Message.Amount;
+        }
+
+        auction.Status = auction.SoldAmount > auction.ReservePrice
+            ? Status.Finished
+            : Status.ReserveNotMet;
+        
+        await auctionDbContext.SaveChangesAsync();
+    }
+}
+
+
+//Bid Placed Consumer
+ public class BidPlacedConsumer(AuctionDbContext auctionDbContext):IConsumer<BidPlaced>
+{
+    public async Task Consume(ConsumeContext<BidPlaced> context)
+    {
+        Console.WriteLine("-->Consuming Bid Placed");
+        var auction = await auctionDbContext.Auctions.FindAsync(context.Message.AuctionId);
+        if (auction.CurrentHighBid == null
+            || context.Message.BidStatus.Contains("Accepted")
+            && context.Message.Amount > auction.CurrentHighBid)
+        {
+            auction.CurrentHighBid = context.Message.Amount;
+            await auctionDbContext.SaveChangesAsync();
+        }
+    }
+}
+
+
+```
+- Similar as above, we will add 2 more consumers for the Search Service 
+```c#
+//Auction Finished
+
+public class AuctionFinishedConsumer:IConsumer<AuctionFinished>
+{
+    public async Task Consume(ConsumeContext<AuctionFinished> context)
+    {
+        var auction = await DB.Find<Item>().OneAsync(context.Message.AuctionId);
+        if (context.Message.ItemSold)
+        {
+            auction.Winner = context.Message.Winner;
+            auction.SoldAmount = (int)context.Message.Amount;
+        }
+
+        auction.Status = "Finished";
+        await auction.SaveAsync();
+    }
+}
+
+//Bid Placed 
+public class BidPlacedConsumer : IConsumer<BidPlaced>
+{
+    public async Task Consume(ConsumeContext<BidPlaced> context)
+    {
+        Console.WriteLine("-->Consuming Bid Placed");
+        var auction = await DB.Find<Item>().OneAsync(context.Message.AuctionId);
+        if (context.Message.BidStatus.Contains("Accepted")
+            && context.Message.Amount > auction.CurrentHighBid
+           )
+        {
+            auction.CurrentHighBid = context.Message.Amount;
+            await auction.SaveAsync();
+        }
+    }
+}
+
+
+```
+
+## Adding a new client for Next.js App to the Identity Service 
+- We will have to add the new Client for the Next.js app inside Config.cs file of the Identity Server like this 
+```c#
+ new Client
+            {
+                ClientId = "nextApp",
+                ClientName = "nextApp",
+                ClientSecrets = { new Secret("secret".Sha256()) },
+                //ID Token and Access Token can be shared without any browser involvement
+                //In case of Mobile App it would only be Code
+                AllowedGrantTypes = GrantTypes.CodeAndClientCredentials,
+                //Pkce is required in case of mobile applications not for web applications
+                RequirePkce = false,
+                RedirectUris = {"http://localhost:3000/api/auth/callback/id-server"},
+                //Allows us to use Refresh Token Functionality
+                AllowOfflineAccess = true,
+                AllowedScopes = {"openid", "profile","auctionApp"},
+                AccessTokenLifetime = 3600*24*30
+            }
+
+
+```
+
