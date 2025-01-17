@@ -2086,3 +2086,352 @@ public class BidPlacedConsumer : IConsumer<BidPlaced>
 
 ```
 
+## Dockerizing our Application 
+- ![alt text](image-51.png)
+- We will create a Dockerfile per service
+- ![alt text](image-52.png)
+- Running the docker build command 
+```shell 
+  docker build -f src/AuctionService/Dockerfile -t testing123 .
+  docker run testing123
+```
+
+- We can add a Docker file for Auction Service as follows: 
+  
+```shell 
+ FROM mcr.microsoft.com/dotnet/sdk:8.0 as build
+# This is a directory inside docker
+WORKDIR /app
+# This is a port inside docker
+EXPOSE 80
+
+# copy all .csproj files and restore as distinct layers. Use the same
+# COPY command for every dockerfile in the project to take advantage of docker
+# caching
+COPY Carsties.sln Carsties.sln
+COPY src/AuctionService/AuctionService.csproj src/AuctionService/AuctionService.csproj
+COPY src/SearchService/SearchService.csproj src/SearchService/SearchService.csproj
+COPY src/GatewayService/GatewayService.csproj src/GatewayService/GatewayService.csproj
+COPY src/IdentityService/IdentityService.csproj src/IdentityService/IdentityService.csproj
+COPY src/Contracts/Contracts.csproj src/Contracts/Contracts.csproj
+
+# Restore package dependencies
+RUN dotnet restore Carsties.sln
+
+# Copy the app folders over 
+COPY src/AuctionService src/AuctionService
+COPY src/Contracts src/Contracts
+
+WORKDIR /app/src/AuctionService
+RUN dotnet publish -c Release -o /app/src/out
+
+# Build runtime image
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY --from=build /app/src/out .
+ENTRYPOINT ["dotnet","AuctionService.dll"]
+
+
+```
+- Similar to above, we can docker files for Search Service and Identity Service as follows 
+```shell
+FROM mcr.microsoft.com/dotnet/sdk:8.0 as build
+# This is a directory inside docker
+WORKDIR /app
+# This is a port inside docker
+EXPOSE 80
+
+# copy all .csproj files and restore as distinct layers. Use the same
+# COPY command for every dockerfile in the project to take advantage of docker
+# caching
+COPY Carsties.sln Carsties.sln
+COPY src/AuctionService/AuctionService.csproj src/AuctionService/AuctionService.csproj
+COPY src/SearchService/SearchService.csproj src/SearchService/SearchService.csproj
+COPY src/GatewayService/GatewayService.csproj src/GatewayService/GatewayService.csproj
+COPY src/IdentityService/IdentityService.csproj src/IdentityService/IdentityService.csproj
+COPY src/Contracts/Contracts.csproj src/Contracts/Contracts.csproj
+
+# Restore package dependencies
+RUN dotnet restore Carsties.sln
+
+# Copy the app folders over 
+COPY src/SearchService src/SearchService
+COPY src/Contracts src/Contracts
+
+WORKDIR /app/src/SearchService
+RUN dotnet publish -c Release -o /app/src/out
+
+# Build runtime image
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY --from=build /app/src/out .
+ENTRYPOINT ["dotnet","SearchService.dll"]
+
+
+```
+
+- Docker file for Identity Service is as follows:
+```shell
+FROM mcr.microsoft.com/dotnet/sdk:8.0 as build
+# This is a directory inside docker
+WORKDIR /app
+# This is a port inside docker
+EXPOSE 80
+
+# copy all .csproj files and restore as distinct layers. Use the same
+# COPY command for every dockerfile in the project to take advantage of docker
+# caching
+COPY Carsties.sln Carsties.sln
+COPY src/AuctionService/AuctionService.csproj src/AuctionService/AuctionService.csproj
+COPY src/SearchService/SearchService.csproj src/SearchService/SearchService.csproj
+COPY src/GatewayService/GatewayService.csproj src/GatewayService/GatewayService.csproj
+COPY src/IdentityService/IdentityService.csproj src/IdentityService/IdentityService.csproj
+COPY src/Contracts/Contracts.csproj src/Contracts/Contracts.csproj
+
+# Restore package dependencies
+RUN dotnet restore Carsties.sln
+
+# Copy the app folders over 
+COPY src/IdentityService src/IdentityService
+
+
+WORKDIR /app/src/IdentityService
+RUN dotnet publish -c Release -o /app/src/out
+
+# Build runtime image
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY --from=build /app/src/out .
+ENTRYPOINT ["dotnet","IdentityService.dll"]
+
+```
+
+- We can then set it up inside docker-compose as follows:
+
+```shell 
+ services:
+  postgres:
+    image: postgres
+    environment:
+      - POSTGRES_PASSWORD=postgrespw
+    ports:
+      - 5432:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  mongodb:
+    image: mongo
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=mongopw
+    ports:
+      - 27017:27017
+    volumes:
+      - mongodata:/data/db
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - 5672:5672
+      - 15672:15672
+  auction-svc:
+    image: nishant198509/auction-svc:latest
+    build:
+      context: .
+      dockerfile: src/AuctionService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - RabbitMq__Host=rabbitmq
+      - ConnectionStrings__DefaultConnection=Server=postgres:5432;User Id=postgres;Password=postgrespw;Database=auctions
+      - IdentityServiceUrl=http://identity-svc
+    ports:
+      - 7001:80
+    depends_on:
+      - postgres
+      - rabbitmq
+  search-svc:
+    image: nishant198509/search-svc:latest
+    build:
+      context: .
+      dockerfile: src/SearchService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - RabbitMq__Host=rabbitmq
+      - ConnectionStrings__MongoDbConnection=mongodb://root:mongopw@mongodb
+      - AuctionServiceUrl=http://auction-svc
+    ports:
+      - 7002:80
+    depends_on:
+      - mongodb
+      - rabbitmq
+  identity-svc:
+    image: nishant198509/identity-svc:latest
+    build:
+      context: .
+      dockerfile: src/IdentityService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - ConnectionStrings__DefaultConnection=Server=postgres:5432;User Id=postgres;Password=postgrespw;Database=identity
+    ports:
+      - 5000:80
+    depends_on:
+      - postgres
+volumes:
+  pgdata:
+  mongodata:
+
+
+```
+
+## Debugging a .NET Application inside Docker 
+- In Rider, we get the following screen where we can attach our code to a process like this: 
+- ![alt text](image-53.png)
+- It will install Jetbrains remote tools inside the container and then we can setup breakpoints in our code. 
+- In VSCode we have option to create launch.json to achieve the same purpose. 
+
+## Dockerizing our Gateway Service
+- If we remember,we had configured our reverse proxy configuration inside our appsettings.Development.json file 
+- That configuration consisted of routes and clusters. 
+- Now we are going to split that configuration 
+- appsettings.json file is run irrespective of which environment we are running in whether in Development or Docker 
+- So we are going to copy over routes inside appsettings.json 
+- We are going to create a new appsettings.Docker.json 
+- Inside that we will copy everything from appsettings.Development.json and modify the urls accordingly to what is running inside docker compose 
+- So cluster information will be in both appsettings.Development.json and appsettings.Docker.json 
+- and routes will be inside appsettings.json 
+
+```json 
+// appsettings.json 
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "ReverseProxy": {
+    "Routes": {
+      "auctionsRead": {
+        "ClusterId": "auctions",
+        "Match": {
+          "Path": "/auctions/{**catch-all}",
+          "Methods": ["GET"]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/auctions/{**catch-all}"
+          }
+        ]
+      },
+      "auctionsWrite": {
+        "ClusterId": "auctions",
+        "AuthorizationPolicy": "default",
+        "Match": {
+          "Path": "/auctions/{**catch-all}",
+          "Methods": ["POST","PUT","DELETE"]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/auctions/{**catch-all}"
+          }
+        ]
+      },
+      "search": {
+        "ClusterId": "search",
+        "Match": {
+          "Path": "/search/{**catch-all}",
+          "Methods": ["GET"]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/search/{**catch-all}"
+          }
+        ]
+      }
+    }
+  }
+}
+
+
+//appsettings.Development.json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Information"
+    }
+  },
+  "IdentityServiceUrl": "http://localhost:5000",
+  "ReverseProxy": {
+    "Clusters": {
+      "auctions": {
+        "Destinations": {
+          "auctionApi": {
+            "Address": "http://localhost:7001"
+          }
+        }
+      },
+      "search": {
+        "Destinations": {
+          "searchApi": {
+            "Address": "http://localhost:7002"
+          }
+        }
+      }
+    }
+  }
+}
+
+
+
+//appsettings.Docker.json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Information"
+    }
+  },
+  "IdentityServiceUrl": "http://identity-svc",
+  "ReverseProxy": {
+    "Clusters": {
+      "auctions": {
+        "Destinations": {
+          "auctionApi": {
+            "Address": "http://auction-svc"
+          }
+        }
+      },
+      "search": {
+        "Destinations": {
+          "searchApi": {
+            "Address": "http://search-svc"
+          }
+        }
+      }
+    }
+  }
+}
+
+
+
+
+```
+- Now the configuration for gateway service inside docker-compose will be as follows: 
+```shell
+  gateway-svc:
+    image: nishant198509/gateway-svc:latest
+    build:
+      context: .
+      dockerfile: src/GatewayService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Docker
+      - ASPNETCORE_URLS=http://+:80
+    ports:
+      - 6001:80
+
+```
+
+
