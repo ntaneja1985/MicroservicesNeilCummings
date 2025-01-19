@@ -2434,4 +2434,1021 @@ volumes:
 
 ```
 
+## Building Client Application using Next.js
+- ![alt text](image-54.png)
+- Here BFF = BACKEND FOR FRONTEND 
+- Next.js provides client side functionality (React), but Next.js is server side first, so it generates HTML on the server and sends it to the client user interface. 
+- If we want some events like button clicks, then Next.js is going to render that part of the page as client side code and return that javascript to the browser. 
+- Majority of the code we send back is pre-rendered HTML and that is great for SEO and it also gives us server side functionality.(BFF)
+
+### Why Next.js ?
+- Performance is excellent 
+- Load times are reduced with lazy loading and pre-fetching. 
+- Good SEO due to server side rendering. 
+- Can acts as BFF for our client app. 
+- We need Next.js to store the token that identity service sends to it and we will store the token on the server side and because Next.js is going to act as a server, we are going to have server side code.
+- It can keep secrets like Client Secrets which we can give from identity server. 
+- It also hides unnecessary or sensitive data before transferring it to the client browser. 
+- Our browser doesnot know where the requests are going to.
+- Client only talks to Next.js server 
+- Next.js server talks to the backend .NET services. 
+- User Interface code is pretty simple 
+- It is React-based. 
+- Next.js is however opinionated and we have to name files/folders as per certain names. 
+- Next.js has excellent hot-reload
+- ![alt text](image-55.png)
+
+## Creating the Next.js Project
+```shell
+npx create-next-app@latest
+```
+## Getting data from API server using server side component 
+```js 
+import React from 'react'
+
+async function getData() {
+    //Caches the data coming from the API
+    const res = await fetch('http://localhost:6001/search');
+    if (!res.ok) {
+        throw new Error('Failed to fetch data');
+    }
+    return res.json();
+}
+export default async function Listings() {
+    const data = await getData();
+    return (
+        <div>
+            {JSON.stringify(data, null, 2)}
+        </div>
+    )
+}
+
+
+```
+- To get complete logging in Next.js 14 project, we need to modify next.config.mjs 
+```js 
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+    logging:{
+        fetches:{
+            fullUrl:true
+        }
+    }
+};
+
+export default nextConfig;
+
+
+```
+
+- ![alt text](image-56.png)
+- If the html rendered by server and javascript sent back in a client component doesnot match, we get a hydration warning like this 
+- ![alt text](image-57.png)
+- We can fix it like this: 
+```js 
+ <span suppressHydrationWarning={true} >
+                    {zeroPad(days)}:{zeroPad(hours)}:{zeroPad(minutes)}:{zeroPad(seconds)}
+                </span>
+
+```
+
+## Creating a List of Auctions 
+- ![alt text](image-58.png)
+```js 
+//Define the types:
+export type PagedResult<T> = {
+    results: T[],
+    pageCount: number,
+    totalCount: number
+}
+
+export type Auction =  {
+    reservePrice: number
+    seller: string
+    winner?: string
+    soldAmount: number
+    currentHighBid: number
+    createdAt: string
+    updatedAt: string
+    auctionEnd: string
+    status: string
+    make: string
+    model: string
+    year: number
+    color: string
+    mileage: number
+    imageUrl: string
+    id: string
+}
+
+//Define the Listing Component inside page.tsx 
+import React from 'react'
+import AuctionCard from "@/app/auctions/AuctionCard";
+import {Auction, PagedResult} from "@/types";
+
+async function getData(): Promise<PagedResult<Auction>> {
+    //Caches the data coming from the API
+    const res = await fetch('http://localhost:6001/search?pageSize=10');
+    if (!res.ok) {
+        throw new Error('Failed to fetch data');
+    }
+    return res.json();
+}
+export default async function Listings() {
+    const data = await getData();
+    return (
+        <div className="grid grid-cols-4 gap-6">
+            {data && data.results.map((auction) => (
+                <AuctionCard key={auction.id} auction={auction} />
+            ))}
+        </div>
+    )
+}
+
+//Define the Auction Card Component 
+import React from 'react'
+import CountdownTimer from "@/app/auctions/CountdownTimer";
+import CarImage from "@/app/auctions/CarImage";
+import {Auction} from "@/types";
+
+type Props = {
+    auction: Auction
+}
+
+export default function AuctionCard({auction}: Props) {
+    return (
+        <a href='#' className='group'>
+            <div className='relative w-full bg-gray-200 aspect-[16/10] rounded-lg overflow-hidden'>
+                <CarImage imageUrl={auction.imageUrl} />
+                <div className='absolute bottom-2 left-2'>
+                    <CountdownTimer auctionEnd={auction.auctionEnd}/>
+                </div>
+            </div>
+            <div className='flex justify-between items-center mt-4'>
+                <h3 className='text-gray-700'>{auction.make} {auction.model}</h3>
+                <p className='font-semibold text-sm'>{auction.year}</p>
+            </div>
+
+        </a>
+    )
+}
+
+
+//Define the CarImage Component 
+'use client'
+import React, {useState} from 'react'
+import Image from "next/image";
+
+type Props = {
+    imageUrl: string
+}
+
+export default function CarImage({imageUrl}: Props) {
+    const [isLoading, setLoading] = useState(true);
+    return (
+        <Image
+            src={imageUrl}
+            alt='image of car'
+            fill
+            priority
+            sizes='(max-width:768px) 100vw,(max-width:1200px) 50vw, 25vw'
+            className={
+            object-cover group-hover:opacity-75 duration-700 ease-in-out
+            ${isLoading ? 'grayscale blur-2xl scale-110':
+                'grayscale-0 blur-0 scale-100'}
+            }
+            onLoad={() => setLoading(false)}
+        />
+    )
+}
+
+
+
+```
+
+## Adding Pagination to the Cars List Component 
+- We will use flowbite-react library for pagination 
+```js 
+//App Pagination Component 
+'use client'
+import React from 'react'
+import {Pagination} from "flowbite-react";
+
+type Props = {
+    currentPage: number;
+    pageCount: number;
+    pageChanged: (page: number) => void;
+}
+export default function AppPagination({currentPage, pageCount, pageChanged}: Props) {
+    return (
+        <Pagination
+        currentPage={currentPage}
+        onPageChange={e=>pageChanged(e)}
+        totalPages={pageCount}
+        layout='pagination'
+        showIcons={true}
+        className='text-blue-500 mb-5'
+        ></Pagination>
+    )
+}
+
+
+//Calling the AppPagination from Listings Component
+'use client'
+import React, {useEffect, useState} from 'react'
+import AuctionCard from "@/app/auctions/AuctionCard";
+import {Auction} from "@/types";
+import AppPagination from "@/app/components/AppPagination";
+import {getData} from "@/app/actions/auctionActions";
+import Filters from "@/app/auctions/Filters";
+
+
+export default function Listings() {
+    const [auctions,setAuctions] = useState<Auction[]>([]);
+    const [pageCount,setPageCount] = useState(0);
+    const [pageNumber,setPageNumber] = useState(1);
+    const [pageSize, setPageSize] = useState(4);
+
+    useEffect(() => {
+        getData(pageNumber, pageSize).then(data=>{
+            setAuctions(data.results);
+            setPageCount(data.pageCount);
+        })
+    },[pageNumber,pageSize])
+
+    if(auctions.length === 0){
+        return <h3>Loading...</h3>
+    }
+    return (
+        <>
+            <Filters pageSize={pageSize} setPageSize={setPageSize}/>
+        <div className="grid grid-cols-4 gap-6">
+            {auctions.map((auction) => (
+                <AuctionCard key={auction.id} auction={auction} />
+            ))}
+        </div>
+            <div className="flex justify-center mt-4">
+                <AppPagination currentPage={pageNumber} pageCount={pageCount} pageChanged={setPageNumber} />
+            </div>
+        </>
+    )
+}
+
+
+```
+- To support external links for images, we have to modify next.config.ts file 
+```js 
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+    logging:{
+        fetches:{
+            fullUrl:true
+        }
+    },
+    images:{
+        remotePatterns:[
+            {protocol:'https',hostname:'cdn.pixabay.com'},
+        ]
+    }
+};
+
+export default nextConfig;
+
+
+```
+
+## Using Zustand for State Management 
+- We create stores as hooks 
+- Zustand is a lightweight and fast state management solution for React applications
+- It helps you avoid boilerplate code and keeps your state management clean and efficient.
+```js 
+import create from 'zustand';
+
+const useStore = create((set) => ({
+  count: 0,
+  increase: () => set((state) => ({ count: state.count + 1 })),
+  decrease: () => set((state) => ({ count: state.count - 1 })),
+}));
+
+
+```
+- We can access the store like this 
+```js 
+ import React from 'react';
+import { useStore } from './store'; // Adjust the path as needed
+
+const Counter = () => {
+  const { count, increase, decrease } = useStore();
+  
+  return (
+    <div>
+      <h1>{count}</h1>
+      <button onClick={increase}>Increase</button>
+      <button onClick={decrease}>Decrease</button>
+    </div>
+  );
+};
+
+export default Counter;
+
+
+```
+- We can update the state using actions defined inside the store like this 
+```js 
+ // Example: Increase the count
+useStore.getState().increase();
+
+
+```
+- Zustand also provides additional features like get and getState for more advanced state management
+```js 
+ const useStore = create((set, get) => ({
+  count: 0,
+  increase: (amount) => {
+    const currentState = get();
+    set((state) => ({ count: state.count + amount }));
+  },
+}));
+
+
+```
+- We will first create a store to store all our query string parameters like pageNumber, pageSize etc 
+
+```js 
+import {create} from "zustand/react";
+
+type State = {
+    pageNumber: number;
+    pageSize: number;
+    pageCount: number;
+    searchTerm: string;
+}
+
+type Actions = {
+    setParams:(params: Partial<State>) => void;
+    reset:() => void;
+}
+
+const initialState: State = {
+    pageNumber: 1,
+    pageSize: 12,
+    pageCount: 1,
+    searchTerm: ''
+}
+
+export const useParamsStore = create<State & Actions>((set) => ({
+    ...initialState,
+    setParams:(newParams:Partial<State>)=>{
+        set((state)=> {
+            if(newParams.pageNumber){
+                return {...state,pageNumber: newParams.pageNumber};
+            } else {
+                return {...state,...newParams, pageNumber:1};
+            }
+        });
+    },
+    reset:()=>set(initialState),
+}))
+
+
+
+```
+- We will now use the store inside the Listings.tsx component 
+-  Notice that now we are getting the state of all the params from the store we created above using the useParamsStore hook. 
+-  We are also using the query-string package to build the url.
+-  We are passing this url to our server side action "getdata" and then using its response to set the data. 
+-  Also we are passing the state and functions from the store to the AppPagination component(which actually changes the state)
+  
+
+```js 
+ 'use client'
+import React, {useEffect, useState} from 'react'
+import AuctionCard from "@/app/auctions/AuctionCard";
+import {Auction, PagedResult} from "@/types";
+import AppPagination from "@/app/components/AppPagination";
+import {getData} from "@/app/actions/auctionActions";
+import Filters from "@/app/auctions/Filters";
+import {useParamsStore} from "@/hooks/useParamsStore";
+import {useShallow} from "zustand/react/shallow";
+import qs from 'query-string'
+
+
+export default function Listings() {
+    // const [auctions,setAuctions] = useState<Auction[]>([]);
+    // const [pageCount,setPageCount] = useState(0);
+    // const [pageNumber,setPageNumber] = useState(1);
+    // const [pageSize, setPageSize] = useState(4);
+    const [data,setData] = useState<PagedResult<Auction>>();
+    const params = useParamsStore(useShallow (state => ({
+        pageNumber: state.pageNumber,
+        pageSize: state.pageSize,
+        searchTerm: state.searchTerm
+    })));
+
+    const setParams = useParamsStore(state =>state.setParams);
+    const url = qs.stringifyUrl({url:'',query:params});
+
+    function setPageNumber(pageNumber: number) {
+        setParams({pageNumber: pageNumber});
+    }
+
+    useEffect(() => {
+        getData(url).then(data=>{
+            // setAuctions(data.results);
+            // setPageCount(data.pageCount);
+            setData(data);
+        })
+    },[url])
+
+    if(!data){
+        return <h3>Loading...</h3>
+    }
+    return (
+        <>
+            <Filters />
+        <div className="grid grid-cols-4 gap-6">
+            {data.results.map((auction) => (
+                <AuctionCard key={auction.id} auction={auction} />
+            ))}
+        </div>
+            <div className="flex justify-center mt-4">
+                <AppPagination currentPage={params.pageNumber} pageCount={data.pageCount} pageChanged={setPageNumber} />
+            </div>
+        </>
+    )
+}
+
+
+
+```
+### useShallow hook 
+- The useShallow hook in Zustand is used to optimize re-renders by memoizing selector functions using shallow comparison. This means that the selector function will only cause a re-render if the output has changed according to shallow equality (i.e., if the references or primitive values have changed, but not deep equality)
+```js
+ import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
+
+const useStore = create((set) => ({
+  items: ['apple', 'banana', 'cherry'],
+}));
+
+export const BearNames = () => {
+  const names = useStore(useShallow((state) => state.items));
+  return <div>{names.join(', ')}</div>;
+};
+
+
+```
+- In this example, BearNames component uses useShallow to memoize the selector function that retrieves the items from the store. 
+- If the items array is updated but remains shallowly equal (i.e., the same references), the component will not re-render unnecessarily
+  
+
+
+## Adding the Search Functionality
+- We will add a Search component for this 
+- First we will have to update the useParams Store to set the search value 
+```js 
+ import {create} from "zustand/react";
+
+type State = {
+    pageNumber: number;
+    pageSize: number;
+    pageCount: number;
+    searchTerm: string;
+    searchValue: string;
+}
+
+type Actions = {
+    setParams:(params: Partial<State>) => void;
+    reset:() => void;
+    setSearchValue: (value: string) => void;
+}
+
+const initialState: State = {
+    pageNumber: 1,
+    pageSize: 12,
+    pageCount: 1,
+    searchTerm: '',
+    searchValue:''
+}
+
+export const useParamsStore = create<State & Actions>((set) => ({
+    ...initialState,
+    setParams:(newParams:Partial<State>)=>{
+        set((state)=> {
+            if(newParams.pageNumber){
+                return {...state,pageNumber: newParams.pageNumber};
+            } else {
+                return {...state,...newParams, pageNumber:1};
+            }
+        });
+    },
+    reset:()=>set(initialState),
+    setSearchValue: (value: string) => {
+        set({searchValue:value});
+    }
+}))
+
+```
+- Next we will have to create a Search component which will use the useParamsStore to update the search Term params, build a new url and trigger a refresh in useEffect of Listing component and update the data.
+```js 
+  'use client'
+import {FaSearch} from "react-icons/fa";
+import {useParamsStore} from "@/hooks/useParamsStore";
+
+export default function Search() {
+    const setParams = useParamsStore(state =>state.setParams);
+    const setSearchValue = useParamsStore(state => state.setSearchValue);
+    const searchValue = useParamsStore(state => state.searchValue);
+
+
+    function search(){
+        setParams({searchTerm:searchValue});
+    }
+
+    return (
+        <div className="flex w-full items-center border-2 rounded-full py-2 shadow-sm">
+            <input
+                type ='text'
+                placeholder='Search for cars'
+                onKeyDown={(e)=>{
+                    if(e.key === 'Enter'){
+                        search()
+                    }
+                }}
+                value={searchValue}
+                onChange={(event) => setSearchValue(event.target.value)}
+                className=flex-grow pl-5 bg-transparent  focus:outline-none
+                border-transparent
+                focus:border-transparent
+                focus:ring-0
+                text-sm
+                text-gray-600
+                
+            />
+            <button onClick={search}>
+                <FaSearch size={34} className="bg-red-400 text-white rounded-full p-2 cursor-pointer mx-2" />
+            </button>
+        </div>
+    )
+}
+
+
+```
+
+## Adding the sorting functionality 
+- First we will have to make changes to the useParamsStore to add an orderBy parameter which we will be used to generate the URL and pass it to the Listing Component which will send it to the server action to sort the data .
+```js 
+import {create} from "zustand/react";
+
+type State = {
+    pageNumber: number;
+    pageSize: number;
+    pageCount: number;
+    searchTerm: string;
+    searchValue: string;
+    orderBy: string;
+}
+
+type Actions = {
+    setParams:(params: Partial<State>) => void;
+    reset:() => void;
+    setSearchValue: (value: string) => void;
+}
+
+const initialState: State = {
+    pageNumber: 1,
+    pageSize: 12,
+    pageCount: 1,
+    searchTerm: '',
+    searchValue:'',
+    orderBy:'make',
+}
+
+export const useParamsStore = create<State & Actions>((set) => ({
+    ...initialState,
+    setParams:(newParams:Partial<State>)=>{
+        set((state)=> {
+            if(newParams.pageNumber){
+                return {...state,pageNumber: newParams.pageNumber};
+            } else {
+                return {...state,...newParams, pageNumber:1};
+            }
+        });
+    },
+    reset:()=>set(initialState),
+    setSearchValue: (value: string) => {
+        set({searchValue:value});
+    }
+}))
+
+```
+- Next we will have to update the Filters component to first have the buttons for sorting like this 
+```js 
+ const orderButtons = [
+    {
+        label:'Alphabetical',
+        icon: AiOutlineSortAscending,
+        value:'make'
+    },
+    {
+        label:'End Date',
+        icon: AiOutlineClockCircle,
+        value:'endingSoon'
+    },
+    {
+        label:'Recently Added',
+        icon: BsFillStopCircleFill,
+        value:'new'
+    }
+
+]
+
+```
+- Then we will have to use these buttons inside the Filter component like this 
+```js 
+ 'use client'
+
+import React from 'react'
+import {Button} from "flowbite-react";
+import {useParamsStore} from "@/hooks/useParamsStore";
+import {AiOutlineClockCircle, AiOutlineSortAscending} from "react-icons/ai";
+import {BsFillStopCircleFill} from "react-icons/bs";
+
+const pageSizeButtons = [4,8,12];
+const orderButtons = [
+    {
+        label:'Alphabetical',
+        icon: AiOutlineSortAscending,
+        value:'make'
+    },
+    {
+        label:'End Date',
+        icon: AiOutlineClockCircle,
+        value:'endingSoon'
+    },
+    {
+        label:'Recently Added',
+        icon: BsFillStopCircleFill,
+        value:'new'
+    }
+
+]
+
+export default function Filters() {
+    const pageSize = useParamsStore(state => state.pageSize);
+    const setParams = useParamsStore(state => state.setParams);
+    const orderBy = useParamsStore(state => state.orderBy);
+
+    return (
+        <div className="flex justify-between items-center mb-4">
+            <div>
+                <span className='uppercase text-sm text-gray-500 mr-2'>Order By</span>
+                <Button.Group>
+                    {orderButtons.map(({label,icon:Icon,value}) => (
+                        <Button color={`${orderBy===value ? 'red':'gray'}`} key={value} onClick={()=>setParams({orderBy:value})} >
+                            <Icon className='mr-3 h-4 w-4'/>
+                            {label}
+                        </Button>
+                    ))}
+                </Button.Group>
+            </div>
+            <div>
+                <span className='uppercase text-sm text-gray-500 mr-2'>Page Size</span>
+                <Button.Group>
+                    {pageSizeButtons.map((size,i) => (
+                        <Button key={i}
+                                onClick={() => setParams({pageSize:size})}
+                        color={`${pageSize === size ? 'red':'gray'}`}
+                        className='focus:ring-0'
+                        >
+                            {size}
+                        </Button>
+                    )) }
+                </Button.Group>
+            </div>
+        </div>
+    )
+}
+
+
+
+```
+- Adding the Filtering functionality 
+- It follows the same pattern as orderBy 
+- First we update the useParamsStore() like this 
+```js 
+ import {create} from "zustand/react";
+
+type State = {
+    pageNumber: number;
+    pageSize: number;
+    pageCount: number;
+    searchTerm: string;
+    searchValue: string;
+    orderBy: string;
+    filterBy: string;
+}
+
+type Actions = {
+    setParams:(params: Partial<State>) => void;
+    reset:() => void;
+    setSearchValue: (value: string) => void;
+}
+
+const initialState: State = {
+    pageNumber: 1,
+    pageSize: 12,
+    pageCount: 1,
+    searchTerm: '',
+    searchValue:'',
+    orderBy:'make',
+    filterBy:'live'
+}
+
+export const useParamsStore = create<State & Actions>((set) => ({
+    ...initialState,
+    setParams:(newParams:Partial<State>)=>{
+        set((state)=> {
+            if(newParams.pageNumber){
+                return {...state,pageNumber: newParams.pageNumber};
+            } else {
+                return {...state,...newParams, pageNumber:1};
+            }
+        });
+    },
+    reset:()=>set(initialState),
+    setSearchValue: (value: string) => {
+        set({searchValue:value});
+    }
+}))
+
+```
+- Then we have to update the Filter component and add the buttons 
+
+```js 
+ 'use client'
+
+import React from 'react'
+import {Button} from "flowbite-react";
+import {useParamsStore} from "@/hooks/useParamsStore";
+import {AiOutlineClockCircle, AiOutlineSortAscending} from "react-icons/ai";
+import {BsFillStopCircleFill, BsStopwatchFill} from "react-icons/bs";
+import {GiFinishLine, GiFlame} from "react-icons/gi";
+
+const pageSizeButtons = [4,8,12];
+const orderButtons = [
+    {
+        label:'Alphabetical',
+        icon: AiOutlineSortAscending,
+        value:'make'
+    },
+    {
+        label:'End Date',
+        icon: AiOutlineClockCircle,
+        value:'endingSoon'
+    },
+    {
+        label:'Recently Added',
+        icon: BsFillStopCircleFill,
+        value:'new'
+    }
+
+]
+
+const filterButtons = [
+    {
+        label:'Live Auctions',
+        icon: GiFlame,
+        value:'live'
+    },
+    {
+        label:'Ending < 6 hours',
+        icon: GiFinishLine,
+        value:'endingSoon'
+    },
+    {
+        label:'Completed',
+        icon: BsStopwatchFill,
+        value:'finished'
+    }
+
+]
+
+export default function Filters() {
+    const pageSize = useParamsStore(state => state.pageSize);
+    const setParams = useParamsStore(state => state.setParams);
+    const orderBy = useParamsStore(state => state.orderBy);
+    const filterBy = useParamsStore(state => state.filterBy);
+
+    return (
+        <div className="flex justify-between items-center mb-4">
+            <div>
+                <span className='uppercase text-sm text-gray-500 mr-2'>Filter By</span>
+                <Button.Group>
+                    {filterButtons.map(({label, icon: Icon, value}) => (
+                        <Button color={`${filterBy === value ? 'red' : 'gray'}`} key={value}
+                                onClick={() => setParams({filterBy: value})}>
+                            <Icon className='mr-3 h-4 w-4'/>
+                            {label}
+                        </Button>
+                    ))}
+                </Button.Group>
+            </div>
+            <div>
+                <span className='uppercase text-sm text-gray-500 mr-2'>Order By</span>
+                <Button.Group>
+                    {orderButtons.map(({label, icon: Icon, value}) => (
+                        <Button color={`${orderBy === value ? 'red' : 'gray'}`} key={value}
+                                onClick={() => setParams({orderBy: value})}>
+                            <Icon className='mr-3 h-4 w-4'/>
+                            {label}
+                        </Button>
+                    ))}
+                </Button.Group>
+            </div>
+            <div>
+                <span className='uppercase text-sm text-gray-500 mr-2'>Page Size</span>
+                <Button.Group>
+                    {pageSizeButtons.map((size, i) => (
+                        <Button key={i}
+                                onClick={() => setParams({pageSize: size})}
+                                color={`${pageSize === size ? 'red' : 'gray'}`}
+                                className='focus:ring-0'
+                        >
+                            {size}
+                        </Button>
+                    ))}
+                </Button.Group>
+            </div>
+        </div>
+    )
+}
+
+
+```
+- Finally we have to update Listing component to use FilterBy filter 
+```js 
+  'use client'
+import React, {useEffect, useState} from 'react'
+import AuctionCard from "@/app/auctions/AuctionCard";
+import {Auction, PagedResult} from "@/types";
+import AppPagination from "@/app/components/AppPagination";
+import {getData} from "@/app/actions/auctionActions";
+import Filters from "@/app/auctions/Filters";
+import {useParamsStore} from "@/hooks/useParamsStore";
+import {useShallow} from "zustand/react/shallow";
+import qs from 'query-string'
+
+
+export default function Listings() {
+    const [data,setData] = useState<PagedResult<Auction>>();
+    const params = useParamsStore(useShallow (state => ({
+        pageNumber: state.pageNumber,
+        pageSize: state.pageSize,
+        searchTerm: state.searchTerm,
+        orderBy: state.orderBy,
+        filterBy: state.filterBy
+    })));
+
+    const setParams = useParamsStore(state =>state.setParams);
+    const url = qs.stringifyUrl({url:'',query:params});
+
+    function setPageNumber(pageNumber: number) {
+        setParams({pageNumber: pageNumber});
+    }
+
+    useEffect(() => {
+        getData(url).then(data=>{
+            // setAuctions(data.results);
+            // setPageCount(data.pageCount);
+            setData(data);
+        })
+    },[url])
+
+    if(!data){
+        return <h3>Loading...</h3>
+    }
+    return (
+        <>
+            <Filters />
+        <div className="grid grid-cols-4 gap-6">
+            {data.results.map((auction) => (
+                <AuctionCard key={auction.id} auction={auction} />
+            ))}
+        </div>
+            <div className="flex justify-center mt-4">
+                <AppPagination currentPage={params.pageNumber} pageCount={data.pageCount} pageChanged={setPageNumber} />
+            </div>
+        </>
+    )
+}
+
+
+```
+
+## Adding a component to be displayed when there are zero results. 
+- Add an Empty Filter component like this which will call reset function of our state 
+```js 
+import React from 'react'
+import {useParamsStore} from "@/hooks/useParamsStore";
+import Heading from "@/app/components/Heading";
+import {Button} from "flowbite-react";
+type Props = {
+    title?:string
+    subtitle?:string
+    showReset?: boolean
+}
+
+export default function EmptyFilter({
+    title='No matches for this filter',
+    subtitle='Try changing the filter',
+    showReset
+                                    }:Props) {
+
+    const reset = useParamsStore(state =>state.reset);
+    return (
+        <div className="h-[40vh] flex flex-col gap-2 justify-center items-center shadow-lg">
+            <Heading title={title} subTitle={subtitle} center />
+            <div className="mt-4">
+                {showReset && (
+                    <Button outline onClick={reset}>
+                        Remove Filters
+                    </Button>
+                )}
+            </div>
+        </div>
+    )
+}
+
+
+```
+
+- We can use it inside Listing component like this 
+```js 
+ 'use client'
+import React, {useEffect, useState} from 'react'
+import AuctionCard from "@/app/auctions/AuctionCard";
+import {Auction, PagedResult} from "@/types";
+import AppPagination from "@/app/components/AppPagination";
+import {getData} from "@/app/actions/auctionActions";
+import Filters from "@/app/auctions/Filters";
+import {useParamsStore} from "@/hooks/useParamsStore";
+import {useShallow} from "zustand/react/shallow";
+import qs from 'query-string'
+import EmptyFilter from "@/app/components/EmptyFilter";
+
+
+export default function Listings() {
+    const [data,setData] = useState<PagedResult<Auction>>();
+    const params = useParamsStore(useShallow (state => ({
+        pageNumber: state.pageNumber,
+        pageSize: state.pageSize,
+        searchTerm: state.searchTerm,
+        orderBy: state.orderBy,
+        filterBy: state.filterBy
+    })));
+
+    const setParams = useParamsStore(state =>state.setParams);
+    const url = qs.stringifyUrl({url:'',query:params});
+
+    function setPageNumber(pageNumber: number) {
+        setParams({pageNumber: pageNumber});
+    }
+
+    useEffect(() => {
+        getData(url).then(data=>{
+            setData(data);
+        })
+    },[url])
+
+    if(!data){
+        return <h3>Loading...</h3>
+    }
+
+    return (
+        <>
+            <Filters />
+            {data.totalCount  === 0 ? (
+                <EmptyFilter showReset/>
+            ):(
+                <>
+                    <div className="grid grid-cols-4 gap-6">
+                        {data.results.map((auction) => (
+                            <AuctionCard key={auction.id} auction={auction}/>
+                        ))}
+                    </div>
+                    <div className="flex justify-center mt-4">
+                        <AppPagination currentPage={params.pageNumber} pageCount={data.pageCount}
+                                       pageChanged={setPageNumber}/>
+                    </div>
+                </>
+            )
+            }
+        </>
+    )
+}
+
+
+```
+
 
