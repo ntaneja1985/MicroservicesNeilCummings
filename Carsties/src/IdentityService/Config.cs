@@ -44,7 +44,8 @@ public static class Config
                 //Allows us to use Refresh Token Functionality
                 AllowOfflineAccess = true,
                 AllowedScopes = {"openid", "profile","auctionApp"},
-                AccessTokenLifetime = 3600*24*30
+                AccessTokenLifetime = 3600*24*30,
+                AlwaysIncludeUserClaimsInIdToken = true
             }
             
             // m2m client credentials flow client

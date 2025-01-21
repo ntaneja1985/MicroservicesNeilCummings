@@ -3451,4 +3451,608 @@ export default function Listings() {
 
 ```
 
+## Authentication in Next.js using NextAuth
+- NextAuth (soon to become Auth.js)
+- We will look at NextAuth v4. 
+- We will first login to Identity Server by passing our Client ID 
+- We will login to the Identity Server using our credentials and then get an authorization code. 
+- We will then be redirect to the client App to the callback url. 
+- The client app will send authorization code, client id, client secret to the identity server and it will respond with an access token. 
+- ![alt text](image-59.png)
+- NextAuth at this time will store an encrypted cookie into our browser, which it will use to maintain a session with itself. 
+- Client App can at this point of time use the access token to request resources from our resource server.
+-  ![alt text](image-60.png)
+- Auth.js is a runtime agnostic library based on standard Web APIs. 
+- It integrates deeply with multiple modern JavaScript frameworks to provide an authentication experience that's simple to get started with, easy to extend, and always private and secure
+- Auth.js supports various authentication methods, including OAuth authentication (e.g., Google, GitHub), Magic Links (e.g., email providers), Credentials (e.g., username and password), and WebAuthn (e.g., passkeys). 
+- It also supports multiple databases through adapters, such as Prisma, Firebase, and Supabase.
+```shell 
+npm install next-auth@beta
+
+```
+- The only environment variable that is mandatory is the AUTH_SECRET. This is a random value used by the library to encrypt tokens and email verification hashes.
+- This is used to decrypt our JWT Token.
+```shell
+ npx auth secret
+```
+- This will also add it to your .env file, respecting the framework conventions (eg.: Next.js's .env.local).
+- Next, create the Auth.js config file and object. This is where you can control the behaviour of the library and specify custom authentication logic, adapters, etc. 
+- We recommend all frameworks to create an auth.ts file in the project.
+- In this file we'll pass in all the options to the framework specific initalization function and then export the route handler(s), signin and signout methods, and more.
+```js 
+//auth.ts file
+import NextAuth from "next-auth"
+
+export const { handlers, signIn, signOut, auth } = NextAuth({
+    providers: [],
+})
+
+```
+### Route Handler: It is Next.js way of being a backend server just like .NET 
+- Next.js can also serve as API server and it can also receive GET/POST requests. 
+- In Next.js if anything wants to be an API route, file name is called route.ts 
+- We will create a file here: ./app/api/auth/[...nextauth]/route.ts and paste this code: 
+```js 
+import { handlers } from "@/auth" // Referring to the auth.ts we just created
+export const { GET, POST } = handlers
+
+```
+- Add optional Middleware to keep the session alive, this will update the session expiry every time its called.
+```js 
+export { auth as middleware } from "@/auth"
+```
+- Since we are using Duende Identity Server, we will have to set it up in the providers array in the auth.ts file 
+```js 
+import NextAuth, {Profile} from "next-auth"
+import DuendeIDS6Provider from "next-auth/providers/duende-identity-server6"
+import {OIDCConfig} from "@auth/core/providers";
+
+export const { handlers, signIn, signOut, auth } = NextAuth({
+    session:{
+        strategy: 'jwt'
+    },
+    providers: [
+        //Here client Id, client Secret are the ones we configured in Config.cs file of Identity Server
+        DuendeIDS6Provider({
+            id:'id-server',
+            clientId: "nextApp",
+            clientSecret: "secret",
+            issuer: "http://localhost:5000",
+            authorization:{params:{scope:'openid profile auctionApp'}},
+            idToken:true
+        } as OIDCConfig<Profile>),
+    ],
+})
+
+```
+- Now to use we will create a separate client component: LoginButton.tsx like this which we use in the Navbar component 
+```js 
+'use client'
+import {Button} from "flowbite-react";
+import {signIn} from "next-auth/react";
+
+export default function LoginButton() {
+    return (
+        <Button outline onClick={()=> signIn('id-server',{redirectTo:'/'},{prompt: 'login'}) }>Login</Button>
+    )
+}
+
+
+
+```
+- Now if we click on the login button, we will be redirected to the Duende Identity Server login page and once successfully logged in, we will get an auth.js.session.token 
+- ![alt text](image-61.png)
+- When we click on Login button, our identity provider information is sent to the identity server along with the scope information, clientId, secret 
+- We get a code back from the identity server. 
+- We then pass this code to the identity server and get the access token which we store inside our cookie 
+- ![alt text](image-62.png)
+
+## Getting Session Details from the SessionToken in the Next.js App 
+- Once a user is logged in, you often want to get the session object in order to use the data in some way. A common use-case is to show their profile picture or display some other user information.
+```js 
+ import { auth } from "../auth"
+ 
+export default async function UserAvatar() {
+  const session = await auth()
+ 
+  if (!session?.user) return null
+ 
+  return (
+    <div>
+      <img src={session.user.image} alt="User Avatar" />
+    </div>
+  )
+}
+
+```
+- To get the current user info we will create a separate server actions file authActions.ts 
+```js 
+ 'use server'
+
+import {auth} from "@/auth";
+
+export async function getCurrentUser() {
+    try {
+        const session = await auth();
+        if(!session) {return null}
+
+        return session.user;
+    }
+    catch (error) {
+        console.log(error)
+
+        return null;
+    }
+}
+
+```
+- We will also setup callback functions inside our auth.ts file 
+```js 
+ import NextAuth, {Profile} from "next-auth"
+import DuendeIDS6Provider from "next-auth/providers/duende-identity-server6"
+import {OIDCConfig} from "@auth/core/providers";
+
+export const { handlers, signIn, signOut, auth } = NextAuth({
+    session:{
+        strategy: 'jwt'
+    },
+    //Identity Server configuration information provided to Next.js server
+    providers: [
+        DuendeIDS6Provider({
+            id:'id-server',
+            clientId: "nextApp",
+            clientSecret: "secret",
+            issuer: "http://localhost:5000",
+            authorization:{params:{scope:'openid profile auctionApp'}},
+            idToken:true
+        } as OIDCConfig<Omit<Profile,'username'>>),
+    ],
+    callbacks:{
+        async jwt({token,profile}){
+            if(profile) {
+                token.username = profile.username;
+            }
+            return token;
+        },
+        async session({session,token}){
+            console.log({session,token})
+            if(token) {
+                session.user.username = token.username;
+            }
+            return session;
+        }
+    }
+}) 
+
+
+```
+- In NextAuth.js, callback functions provide a way to control what happens at various stages of the authentication process. They are useful for modifying the default behavior and adding custom logic. 
+- Here are the main types of callbacks and how you can use them:
+- **signIn**: This callback is triggered whenever a user signs in. It can be used to control whether the sign-in is allowed. 
+- For example, you can use it to deny sign-in based on certain conditions:
+```js 
+ callbacks: {
+  async signIn({ user, account, profile, email, credentials }) {
+    // Only allow sign-in if the user's email domain is 'example.com'
+    if (email.endsWith('@example.com')) {
+      return true
+    }
+    return false
+  }
+}
+
+
+
+```
+- **redirect**: This callback is called whenever a user is redirected after a successful sign-in or sign-out. 
+- It can be used to control the URL to which the user is redirected:
+```js 
+ callbacks: {
+  async redirect({ url, baseUrl }) {
+    // Redirect to the home page after sign-in
+    return baseUrl
+  }
+}
+
+
+```
+- **session**: This callback is triggered whenever a session is checked, such as on API requests or client-side requests. 
+- It can be used to modify the session object before it is returned to the client:
+```js 
+ callbacks: {
+  async session({ session, user, token }) {
+    // Add user ID to the session object
+    session.user.id = token.id
+    return session
+  }
+}
+
+
+```
+- **jwt**: This callback is called whenever a JSON Web Token (JWT) is created or updated. 
+- It can be used to add custom properties to the token:
+```js 
+ callbacks: {
+  async jwt({ token, user, account, profile, isNewUser }) {
+    // Add user ID to the token
+    if (user) {
+      token.id = user.id
+    }
+    return token
+  }
+}
+
+
+```
+- **signOut**: This callback is triggered whenever a user signs out. 
+- It can be used to perform any actions required upon sign-out:
+```js 
+ callbacks: {
+  async signOut({ token, user }) {
+    // Perform any sign-out actions
+    return true
+  }
+}
+
+
+```
+- To use callbacks, use them like this 
+```js 
+ import NextAuth from 'next-auth'
+import Providers from 'next-auth/providers'
+
+export default NextAuth({
+  providers: [
+    Providers.Google({
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    }),
+  ],
+  callbacks: {
+    // Your custom callbacks go here
+  }
+})
+
+
+```
+
+## Populating the User Actions Dropdown
+- This can be done as follows: 
+```js 
+ 'use client'
+import React from 'react'
+import { Dropdown, DropdownDivider, DropdownItem} from "flowbite-react";
+import Link from "next/link";
+import {User} from 'next-auth'
+//import {useRouter} from "next/router";
+import {HiCog, HiUser} from "react-icons/hi";
+import {AiFillCar, AiFillTrophy, AiOutlineLogout} from "react-icons/ai";
+import {signOut} from "next-auth/react";
+
+
+type Props = {
+    user: User
+}
+export default function UserActions({user}:Props) {
+    //const router = useRouter();
+
+    return (
+       <Dropdown inline label = {`Welcome ${user.name}`} >
+            <DropdownItem icon = {HiUser}>
+                <Link href="/">
+                    My Auctions
+                </Link>
+            </DropdownItem>
+           <DropdownItem icon = {AiFillTrophy}>
+               <Link href="/">
+                   Auctions Won
+               </Link>
+           </DropdownItem>
+           <DropdownItem icon = {AiFillCar}>
+               <Link href="/">
+                   Sell My Car
+               </Link>
+           </DropdownItem>
+           <DropdownItem icon = {HiCog}>
+               <Link href="/session">
+                   Session (dev)
+               </Link>
+           </DropdownItem>
+           <DropdownDivider/>
+           <DropdownItem icon = {AiOutlineLogout} onClick={()=> signOut({redirectTo:'/'})}>
+              Sign Out
+           </DropdownItem>
+       </Dropdown>
+    )
+}
+
+
+
+```
+- useRouter: This hook allows you to access the Next.jsrouter object, providing methods and properties that help you navigate and manipulate the router. It can be very useful for programmatically changing routes, getting the current route parameters, and more. 
+- Here's a basic example:
+```js 
+ import { useRouter } from 'next/router'
+
+const MyComponent = () => {
+  const router = useRouter()
+
+  const handleClick = () => {
+    router.push('/about')
+  }
+
+  return (
+    <button onClick={handleClick}>Go to About</button>
+  )
+}
+
+
+```
+- usePathname: This hook returns the current pathname, which is the path part of the URL. It is useful when you need to perform actions based on the current route without triggering a rerender. 
+- An example usage would be:
+```js 
+ import { usePathname } from 'next/navigation'
+
+const MyComponent = () => {
+  const pathname = usePathname()
+
+  return (
+    <div>Current Pathname: {pathname}</div>
+  )
+}
+
+
+```
+
+## Protecting Routes 
+- Securing routes in Next.jsis an essential aspect of building applications, especially when you want to restrict access to certain pages based on user authentication or roles. 
+- Protecting routes can be done generally by checking for the session and taking an action if an active session is not found, like redirecting the user to the login page or simply returning a 401: Unauthenticated response.
+- Here are some common methods to protect routes:
+- 1. Client-Side Protection:
+- You can use React hooks like useEffect and useRouter to perform client-side checks for authentication. 
+- This approach can redirect users if they are not authenticated.
+```js 
+ import { useEffect } from 'react'
+import { useRouter } from 'next/router'
+import { useAuth } from '../context/AuthContext' // Custom hook for authentication
+
+const ProtectedPage = () => {
+  const router = useRouter()
+  const { user } = useAuth() 
+
+  useEffect(() => {
+    if (!user) {
+      router.push('/login')
+    }
+  }, 
+
+```
+- One more example can be using session object like this 
+```js 
+ import { auth } from "@/auth"
+ 
+export default async function Page() {
+  const session = await auth()
+  if (!session) return <div>Not authenticated</div>
+ 
+  return (
+    <div>
+      <pre>{JSON.stringify(session, null, 2)}</pre>
+    </div>
+  )
+}
+
+
+```
+- With Next.js 12+, the easiest way to protect a set of pages is using the middleware file. You can create a middleware.ts file in your root pages directory with the following contents.
+```js 
+ export { auth as middleware } from "@/auth"
+
+```
+- Then define authorized callback in your auth.ts file.
+```js 
+ import NextAuth from "next-auth"
+ 
+export const { auth, handlers } = NextAuth({
+  callbacks: {
+    authorized: async ({ auth }) => {
+      // Logged in users are authenticated, otherwise redirect to login page
+      return !!auth
+    },
+  },
+})
+
+```
+- You can also use the auth method as a wrapper if you'd like to implement more logic inside the middleware.
+```js 
+ import { auth } from "@/auth"
+ 
+export default auth((req) => {
+  if (!req.auth && req.nextUrl.pathname !== "/login") {
+    const newUrl = new URL("/login", req.nextUrl.origin)
+    return Response.redirect(newUrl)
+  }
+})
+
+
+```
+- In our application we implement a middleware.ts file like this
+- Middleware will protect pages as defined by the matcher config export. 
+- Here we can also use a regex to match multiple routes or you can negate certain routes in order to protect all remaining routes. 
+
+ 
+```js 
+ export {auth as middleware} from "@/auth"
+
+export const config = {
+    matcher: [
+        '/session'
+    ],
+    pages:{
+        signIn: '/api/auth/signIn'
+    }
+}
+
+```
+- Then we define a file called signIn inside api/auth folder 
+```js 
+ import React from 'react'
+import EmptyFilter from "@/app/components/EmptyFilter";
+
+export default function SignIn({searchParams}:{searchParams:{callbackUrl:string}}) {
+    return (
+        <EmptyFilter
+        title="You need to be logged in to do that"
+        subtitle='Please click below to login'
+        showLogin
+        callbackUrl={searchParams.callbackUrl}
+
+        />
+    )
+}
+
+
+
+```
+- Then we specify the Empty Filter component like this: 
+```js 
+ 'use client'
+import {useParamsStore} from "@/hooks/useParamsStore";
+import Heading from "@/app/components/Heading";
+import {Button} from "flowbite-react";
+import {signIn} from "next-auth/react";
+type Props = {
+    title?:string
+    subtitle?:string
+    showReset?: boolean
+    showLogin?:boolean
+    callbackUrl?:string
+}
+
+export default function EmptyFilter({
+    title='No matches for this filter',
+    subtitle='Try changing the filter',
+    showReset,
+    showLogin,
+    callbackUrl
+                                    }:Props) {
+
+    const reset = useParamsStore(state =>state.reset);
+    return (
+        <div className="h-[40vh] flex flex-col gap-2 justify-center items-center shadow-lg">
+            <Heading title={title} subTitle={subtitle} center />
+            <div className="mt-4">
+                {showReset && (
+                    <Button outline onClick={reset}>
+                        Remove Filters
+                    </Button>
+                )}
+                {showLogin && (
+                    <Button outline onClick={()=>signIn('id-server',{redirectTo:callbackUrl})}>
+                        Login
+                    </Button>
+                )}
+            </div>
+        </div>
+    )
+}
+
+
+```
+
+## Testing API Authentication
+- We know we get a session object using var session = await auth(). 
+- But we donot have the access token populated inside it. We can fix it by modifying the callback functions inside auth.ts like this: 
+- Keep in mind we will have to update next-ath.d.ts 
+```js 
+ import NextAuth, { type DefaultSession } from "next-auth"
+import {JWT} from 'next-auth/jwt'
+
+declare module "next-auth" {
+    /**
+     * Returned by `auth`, `useSession`, `getSession` and received as a prop on the `SessionProvider` React Context
+     */
+    interface Session {
+        user: {
+            /** The user's postal address. */
+            username: string
+            /**
+             * By default, TypeScript merges new interface properties and overwrites existing ones.
+             * In this case, the default session user properties will be overwritten,
+             * with the new ones defined above. To keep the default session user properties,
+             * you need to add them back into the newly declared interface.
+             */
+        } & DefaultSession["user"]
+        accessToken: string
+    }
+
+    interface Profile {
+        username: string
+    }
+}
+
+declare module "next-auth/jwt" {
+    interface JWT {
+        username:string
+        accessToken:string
+    }
+}
+
+
+```
+- We will modify the callbacks to include the access token.
+```js 
+ callbacks:{
+        async jwt({token,profile, account}){
+            if(account && account.access_token){
+                token.accessToken = account.access_token;
+            }
+            if(profile) {
+                token.username = profile.username;
+            }
+            console.log(token);
+            return token;
+        },
+        async session({session,token}){
+            if(token) {
+                session.user.username = token.username;
+                session.accessToken = token.accessToken;
+            }
+            return session;
+        },
+
+```
+- Now we will make a server action to update the Auction like this 
+```js 
+  export async function updateAuctionTest() {
+    const data = {
+        mileage: Math.floor(Math.random() * 10000) + 1,
+    }
+
+    const session = await auth();
+    const res = await fetch('http://localhost:6001/auctions/afbee524-5972-4075-8800-7d1f9d7b0a0c', {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session?.accessToken}`
+        },
+        body: JSON.stringify(data)
+    });
+
+    if(!res.ok) {
+        return {status:res.status, data:res.statusText}
+    }
+
+    return res.statusText;
+}
+
+```
+
+## Why are we storing session token inside our client browser 
+- That token is encrypted using NEXTAUTH_SECRET 
+- Token is an HTTP only cookie so it cannot be accessed by malicious JS 
+- 
+
+
+
 
