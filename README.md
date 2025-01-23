@@ -4051,8 +4051,757 @@ declare module "next-auth/jwt" {
 ## Why are we storing session token inside our client browser 
 - That token is encrypted using NEXTAUTH_SECRET 
 - Token is an HTTP only cookie so it cannot be accessed by malicious JS 
-- 
 
 
+## CRUD Operations in the client app 
+- Forms are client side functionality. They are not server side functionality. 
+- We need to get data from the form and submit it to the server. 
+- We will use react-hook-form package for this 
+```shell 
+ npm install react-hook-form react-datepicker
+
+
+```
+- react-hook-form is a library that helps you manage form state and validation in React applications with ease.
+-  It's a lightweight library, which makes it a popular choice for developers who want to improve performance and scalability.
+```js 
+ import React from 'react'
+import { useForm } from 'react-hook-form'
+
+const MyForm = () => {
+  const { register, handleSubmit, formState: { errors } } = useForm()
+  
+  const onSubmit = data => {
+    console.log(data)
+  }
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <div>
+        <label>Name</label>
+        <input {...register('name', { required: true })} />
+        {errors.name && <p>Name is required.</p>}
+      </div>
+      <div>
+        <label>Email</label>
+        <input {...register('email', { 
+          required: "Email is required",
+          pattern: {
+            value: /^\S+@\S+$/i,
+            message: "Invalid email address"
+          }
+        })} />
+        {errors.email && <p>{errors.email.message}</p>}
+      </div>
+      <button type="submit">Submit</button>
+    </form>
+  )
+}
+
+export default MyForm
+
+
+```
+- The library makes it easy to apply validation rules directly to input fields.
+-  We can use the register function to define these rules and provide meaningful error messages.
+```js 
+ import React from 'react'
+import { useForm } from 'react-hook-form'
+
+const MyForm = () => {
+  const { register, handleSubmit, formState: { errors } } = useForm()
+  
+  const onSubmit = data => {
+    console.log(data)
+  }
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <div>
+        <label>Name</label>
+        <input {...register('name', { required: true })} />
+        {errors.name && <p>Name is required.</p>}
+      </div>
+      <div>
+        <label>Email</label>
+        <input 
+          {...register('email', { 
+            required: "Email is required",
+            pattern: {
+              value: /^\S+@\S+$/i,
+              message: "Invalid email address"
+            }
+          })} 
+        />
+        {errors.email && <p>{errors.email.message}</p>}
+      </div>
+      <button type="submit">Submit</button>
+    </form>
+  )
+}
+
+export default MyForm
+
+
+
+```
+- In the above example if we submit the form to the server and we get validation errors we can set the errors using the setError function provided by react-hook-form 
+```js 
+ import React from 'react'
+import { useForm } from 'react-hook-form'
+
+const MyForm = () => {
+  const { register, handleSubmit, setError, formState: { errors } } = useForm()
+
+  const onSubmit = async data => {
+    try {
+      const response = await fetch('/api/submit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(data)
+      })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        // Assuming the server returns an object with error messages keyed by field names
+        Object.keys(result.errors).forEach(field => {
+          setError(field, {
+            type: 'server',
+            message: result.errors[field]
+          })
+        })
+      } else {
+        console.log('Form submitted successfully:', result)
+      }
+    } catch (error) {
+      console.error('Error submitting form:', error)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <div>
+        <label>Name</label>
+        <input {...register('name', { required: true })} />
+        {errors.name && <p>{errors.name.message}</p>}
+      </div>
+      <div>
+        <label>Email</label>
+        <input 
+          {...register('email', { 
+            required: "Email is required",
+            pattern: {
+              value: /^\S+@\S+$/i,
+              message: "Invalid email address"
+            }
+          })} 
+        />
+        {errors.email && <p>{errors.email.message}</p>}
+      </div>
+      <button type="submit">Submit</button>
+    </form>
+  )
+}
+
+export default MyForm
+
+
+```
+### We use the register function of react-hook-form to register our inputs to the form and then react-hook-form will track those inputs 
+- We can track the formState as well. 
+```js 
+ 'use client'
+import {FieldValues, useForm} from "react-hook-form";
+import {Button, TextInput} from "flowbite-react";
+
+
+export default function AuctionForm() {
+    const {register, handleSubmit, setFocus, formState:{isSubmitting,isValid,isDirty,errors}} = useForm();
+    function onSubmit(data: FieldValues) {
+        console.log(data);
+    }
+    return (
+        <form className='flex flex-col mt-3' onSubmit={handleSubmit(onSubmit)}>
+            <div className='mb-3 block'>
+                <TextInput
+                    {...register('make', {required: 'Make is required'})}
+                    placeholder='Make'
+                    color={errors?.make && 'failure'}
+                    helperText={errors?.make?.message as string}
+                />
+            </div>
+            <div className='mb-3 block'>
+                <TextInput
+                    {...register('model', {required: 'Model is required'})}
+                    placeholder='Model'
+                    color={errors?.model && 'failure'}
+                    helperText={errors?.model?.message as string}
+                />
+            </div>
+            <div className='flex justify-between'>
+                <Button outline color='gray'>Cancel</Button>
+                <Button
+                    isProcessing={isSubmitting}
+                    //disabled={!isValid}
+                    type='submit'
+                    outline
+                    color='success'>Submit</Button>
+            </div>
+        </form>
+    )
+}
+
+
+
+```
+
+## Creating a reusable form input 
+- The useController hook is part of the react-hook-form library and provides a way to control an individual form field, giving you more granular control over the field's state and behavior. 
+- It's particularly useful when you need to integrate custom components with your form.
+- Create a custom input component: 
+```js 
+ import React from 'react'
+import { useController } from 'react-hook-form'
+
+const CustomInput = ({ control, name, rules }) => {
+  const {
+    field: { onChange, onBlur, value, ref },
+    fieldState: { error }
+  } = useController({
+    name,
+    control,
+    rules
+  })
+
+  return (
+    <div>
+      <input
+        name={name}
+        ref={ref}
+        value={value}
+        onChange={onChange}
+        onBlur={onBlur}
+      />
+      {error && <p>{error.message}</p>}
+    </div>
+  )
+}
+
+
+```
+
+- Use custom input within a form like this 
+```js 
+ import React from 'react'
+import { useForm, Controller } from 'react-hook-form'
+import CustomInput from './CustomInput'
+
+const MyForm = () => {
+  const { control, handleSubmit } = useForm()
+
+  const onSubmit = data => {
+    console.log(data)
+  }
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <Controller
+        name="customInput"
+        control={control}
+        render={({ field }) => (
+          <CustomInput {...field} control={control} name="customInput" rules={{ required: 'This field is required' }} />
+        )}
+      />
+      <button type="submit">Submit</button>
+    </form>
+  )
+}
+
+export default MyForm
+
+
+
+```
+- We created a custom input element like this :
+```js 
+ import {useController, UseControllerProps} from "react-hook-form";
+import {Label, TextInput} from "flowbite-react";
+
+type Props = {
+    label: string;
+    type?:string;
+    showLabel?: boolean;
+} & UseControllerProps
+export default function Input(props: Props) {
+    const {fieldState,field} = useController({...props, defaultValue:''});
+
+    return (
+        <div className='mb-3'>
+            {props.showLabel && (
+                <div className='mb-2 block'>
+                <Label htmlFor={field.name} value={props.label}/>
+                </div>
+            )}
+            <TextInput
+                {...props}
+                {...field}
+                type = {props.type || 'text'}
+                placeholder={props.label}
+                color={fieldState.error ? 'failure' : !fieldState.isDirty ? '':'success'}
+                helperText={fieldState.error?.message}
+            />
+
+        </div>
+    )
+}
+
+
+
+```
+- We used it inside the AuctionForm.tsx like this 
+```js 
+ 'use client'
+import {FieldValues, useForm} from "react-hook-form";
+import {Button, TextInput} from "flowbite-react";
+import Input from "@/app/components/Input";
+
+
+export default function AuctionForm() {
+    // const {register, handleSubmit, setFocus, formState:{isSubmitting,isValid,isDirty,errors}} = useForm();
+    const {control, handleSubmit, setFocus, formState:{isSubmitting,isValid,isDirty,errors}} = useForm();
+    function onSubmit(data: FieldValues) {
+        console.log(data);
+    }
+    return (
+        <form className='flex flex-col mt-3' onSubmit={handleSubmit(onSubmit)}>
+           <Input label='Make'
+                  name='make'
+                  control={control}
+                  rules={{required:'Make is required'}}/>
+            <Input label='Model'
+                   name='model'
+                   control={control}
+                   rules={{required:'Model is required'}}/>
+            <div className='flex justify-between'>
+                <Button outline color='gray'>Cancel</Button>
+                <Button
+                    isProcessing={isSubmitting}
+                    //disabled={!isValid}
+                    type='submit'
+                    outline
+                    color='success'>Submit</Button>
+            </div>
+        </form>
+    )
+}
+
+
+```
+
+## Creating a custom reusable Date Input
+- We will make use of react-datepicker package 
+```js 
+ import {useController, UseControllerProps} from "react-hook-form";
+import {Label} from "flowbite-react";
+import 'react-datepicker/dist/react-datepicker.css'
+import DatePicker, {DatePickerProps} from "react-datepicker";
+
+type Props = {
+    label: string;
+    type?:string;
+    showLabel?: boolean;
+} & UseControllerProps & DatePickerProps;
+export default function DateInput(props: Props) {
+    const {fieldState,field} = useController({...props, defaultValue:''});
+
+    return (
+        <div className='mb-3'>
+            {props.showLabel && (
+                <div className='mb-2 block'>
+                    <Label htmlFor={field.name} value={props.label}/>
+                </div>
+            )}
+            <DatePicker
+                {...props}
+                {...field}
+                placeholderText={props.label}
+                selected={field.value}
+                className={`
+                rounded-lg 
+                w-[100%]
+                flex flex-col 
+                ${fieldState.error ? 'bg-red-50 border-red-500 text-red-900' :
+                    (!fieldState.invalid && fieldState.isDirty) ?
+                        'bg-green-50 border-green-500 text-green-900':
+                        ''
+                }
+                `}
+            />
+            {fieldState.error && (
+                <div className='text-red-500 text-sm'>
+                    {fieldState.error.message}
+                </div>
+            )}
+        </div>
+    )
+}
+
+
+```
+- We can use this datepicker like this 
+```js 
+  <DateInput
+                    label='Auction End Date/Time'
+                    name='auctionEnd'
+                    dateFormat={'dd MMMM yyyy h:mm a'}
+                    showTimeSelect
+                    control={control}
+                    rules={{required: 'Auction End Date is required'}}
+                />
+
+```
+
+## Creating a fetch Wrapper 
+- We will use server actions using Next.js 
+- Client will send request to Next.js server which will send request to the API resource server. 
+- There are libraries like axios and use-swr to do this 
+- However we want to make server side based fetch requests
+- The code below is a custom fetch wrapper that we have developed for our GET/POST/PUT/DELETE requests.
+```js 
+ import {auth} from "@/auth";
+
+const baseUrl = 'http://localhost:6001/';
+
+async function handleResponse(response: Response) {
+    const text = await response.text();
+    const data = text && JSON.parse(text);
+    if(response.ok) {
+        return data || response.statusText;
+    } else {
+        const error = {
+            status: response.status,
+            message: response.statusText
+        }
+        return error;
+    }
+}
+
+async function getHeaders() {
+    const session = await auth();
+    const headers = {
+        'Content-Type': 'application/json'
+    } as any;
+    if(session?.accessToken) {
+        headers.Authorization = `Bearer ${session?.accessToken}`;
+    }
+    return headers;
+}
+
+async function get(url: string) {
+    const requestOptions = {
+        method: 'GET',
+        headers: await getHeaders()
+    }
+    const response = await fetch(baseUrl + url, requestOptions);
+
+    return handleResponse(response);
+}
+
+async function post(url: string, body: {}) {
+    const requestOptions = {
+        method: 'POST',
+        headers: await getHeaders(),
+        body: JSON.stringify(body)
+    }
+    const response = await fetch(baseUrl + url, requestOptions);
+
+    return handleResponse(response);
+}
+
+async function put(url: string, body: {}) {
+    const requestOptions = {
+        method: 'PUT',
+        headers: await getHeaders(),
+        body: JSON.stringify(body)
+    }
+    const response = await fetch(baseUrl + url, requestOptions);
+
+    return handleResponse(response);
+}
+
+async function del(url: string) {
+    const requestOptions = {
+        method: 'DELETE',
+        headers: await getHeaders()
+    }
+    const response = await fetch(baseUrl + url, requestOptions);
+
+    return handleResponse(response);
+}
+
+export const fetchWrapper = {
+    get,post,put,del
+}
+
+
+```
+- We can use it like this: 
+```js 
+export async function getData(query:string): Promise<PagedResult<Auction>> {
+
+    return await fetchWrapper.get(`search${query}`);
+}
+
+export async function updateAuctionTest() {
+    const data = {
+        mileage: Math.floor(Math.random() * 10000) + 1,
+    }
+
+   return await fetchWrapper.put('auctions/afbee524-5972-4075-8800-7d1f9d7b0a0c',data);
+}
+
+```
+- Similar to above we will components for creating new auction, updating an auction and deleting an auction 
+
+### Creating the Auction 
+```js 
+//Create Auction Page
+import Heading from "@/app/components/Heading";
+import AuctionForm from "@/app/auctions/AuctionForm";
+
+
+export default function Create() {
+    return (
+        <div className="mx-auto max-w-[75%] shadow-lg p-10 bg-white rounded-lg">
+            <Heading title = 'Sell your car!' subTitle='Please enter the details of your car' />
+            <AuctionForm/>
+        </div>
+    )
+}
+
+
+//Auction Form 
+'use client'
+import {FieldValues, useForm} from "react-hook-form";
+import {Button} from "flowbite-react";
+import Input from "@/app/components/Input";
+import {useEffect} from "react";
+import DateInput from "@/app/components/DateInput";
+import {createAuction, updateAuction} from "@/app/actions/auctionActions";
+import {usePathname, useRouter} from "next/navigation";
+import toast from "react-hot-toast";
+import {Auction} from "@/types";
+
+
+
+type Props = {
+    auction?: Auction
+}
+
+export default function AuctionForm({auction}:Props) {
+    // const {register, handleSubmit, setFocus, formState:{isSubmitting,isValid,isDirty,errors}} = useForm();
+    const {control, handleSubmit, setFocus,reset,
+        formState:{isSubmitting,isValid,isDirty,errors}} =
+        useForm({
+        mode:'onTouched'
+    });
+    const router = useRouter();
+    const pathName = usePathname();
+    useEffect(()=>{
+        if(auction){
+            const {make,model, year, mileage, color} = auction;
+            reset({make,model,year,mileage,color})
+        }
+        setFocus('make')
+    },[setFocus]);
+    async function onSubmit(data: FieldValues) {
+        try {
+            console.log(data);
+            let id = '';
+            let res;
+            if(pathName === '/auctions/create') {
+                 res =  await createAuction(data);
+                id = res.id;
+            } else {
+                if(auction){
+                    res = await updateAuction(data, auction.id);
+                    id = auction.id;
+                }
+            }
+
+           if(res.error){
+               throw res.error;
+           }
+           router.push(`/auctions/details/${id}`);
+        }
+        catch(error:any){
+            toast.error(error.status + ' '+ error.message);
+        }
+    }
+    return (
+        <form className='flex flex-col mt-3' onSubmit={handleSubmit(onSubmit)}>
+            <Input label='Make'
+                   name='make'
+                   control={control}
+                   rules={{required: 'Make is required'}}/>
+            <Input label='Model'
+                   name='model'
+                   control={control}
+                   rules={{required: 'Model is required'}}/>
+            <Input label='Color'
+                   name='color'
+                   control={control}
+                   rules={{required: 'Color is required'}}/>
+            <div className="grid grid-cols-2 gap-3">
+                <Input label='Year'
+                       name='year'
+                       control={control}
+                       type='number'
+                       rules={{required: 'Year is required'}}/>
+                <Input label='Mileage'
+                       name='mileage'
+                       type='number'
+                       control={control}
+                       rules={{required: 'Mileage is required'}}/>
+            </div>
+
+            {
+                pathName === '/auctions/create' &&
+            <>
+
+            <Input label='Image Url'
+                   name='imageUrl'
+                   control={control}
+                   rules={{required: 'Image Url is required'}}/>
+            <div className="grid grid-cols-2 gap-3">
+                <Input label='Reserve Price(enter 0 if no reserve)'
+                       name='reservePrice'
+                       control={control}
+                       type='number'
+                       rules={{required: 'Reserve Price is required'}}/>
+                <DateInput
+                    label='Auction End Date/Time'
+                    name='auctionEnd'
+                    dateFormat={'dd MMMM yyyy h:mm a'}
+                    showTimeSelect
+                    control={control}
+                    rules={{required: 'Auction End Date is required'}}
+                />
+            </div>
+            </>
+            }
+            <div className='flex justify-between'>
+                <Button outline color='gray'>Cancel</Button>
+                <Button
+                    isProcessing={isSubmitting}
+                    disabled={!isValid}
+                    type='submit'
+                    outline
+                    color='success'>Submit</Button>
+            </div>
+        </form>
+    )
+}
+
+
+
+```
+### Updating an Auction 
+```js 
+//Updating Auction Page 
+import Heading from "@/app/components/Heading";
+import AuctionForm from "@/app/auctions/AuctionForm";
+import {getDetailedViewData} from "@/app/actions/auctionActions";
+
+
+export default async function Update({params}:{params:{id:string}}) {
+    const data = await getDetailedViewData(params.id);
+
+    return (
+        <div className='mx-auto max-w-[75%] shadow-lg p-10 bg-white rounded-lg'>
+        <Heading title='Update your auction' subTitle='Please update details of your car'/>
+            <AuctionForm auction = {data}/>
+        </div>
+    )
+}
+
+```
+
+### Deleting an Auction 
+```js 
+//Deleting an Auction 
+//This will just be a button to which we will pass our id of auction to delete 
+import Heading from "@/app/components/Heading";
+import AuctionForm from "@/app/auctions/AuctionForm";
+import {getDetailedViewData} from "@/app/actions/auctionActions";
+
+
+export default async function Update({params}:{params:{id:string}}) {
+    const data = await getDetailedViewData(params.id);
+
+    return (
+        <div className='mx-auto max-w-[75%] shadow-lg p-10 bg-white rounded-lg'>
+        <Heading title='Update your auction' subTitle='Please update details of your car'/>
+            <AuctionForm auction = {data}/>
+        </div>
+    )
+}
+
+
+
+```
+
+## Updating the Auction Actions 
+- We will update our auction Actions server actions to support creating/updating/deleting an auction 
+- Note that in case of updating an action we are revalidating the auction path for that specific id 
+```js 
+ 'use server'
+import {Auction, PagedResult} from "@/types";
+import {auth} from "@/auth";
+import {fetchWrapper} from "@/lib/fetchWrapper";
+import {FieldValue, FieldValues} from "react-hook-form";
+import {revalidatePath} from "next/cache";
+
+export async function getData(query:string): Promise<PagedResult<Auction>> {
+    //Caches the data coming from the API
+    // const res = await fetch(`http://localhost:6001/search${query}`);
+    // if (!res.ok) {
+    //     throw new Error('Failed to fetch data');
+    // }
+    // return res.json();
+
+    return await fetchWrapper.get(`search${query}`);
+}
+
+export async function getDetailedViewData(id:string): Promise<Auction> {
+    return await fetchWrapper.get(`auctions/${id}`);
+}
+
+export async function updateAuctionTest() {
+    const data = {
+        mileage: Math.floor(Math.random() * 10000) + 1,
+    }
+
+   return await fetchWrapper.put('auctions/afbee524-5972-4075-8800-7d1f9d7b0a0c',data);
+}
+
+export async function createAuction(data:FieldValues) {
+    return await fetchWrapper.post('auctions',data);
+}
+
+export async function updateAuction(data:FieldValues,id:string) {
+    const res =  await fetchWrapper.put(`auctions/${id}`,data);
+    revalidatePath(`/auctions/${id}`);
+    return res;
+}
+
+export async function deleteAuction(id:string) {
+    return await fetchWrapper.del(`auctions/${id}`);
+}
+
+```
 
 
