@@ -3805,7 +3805,7 @@ const MyComponent = () => {
 ```
 
 ## Protecting Routes 
-- Securing routes in Next.jsis an essential aspect of building applications, especially when you want to restrict access to certain pages based on user authentication or roles. 
+- Securing routes in Next.js is an essential aspect of building applications, especially when you want to restrict access to certain pages based on user authentication or roles. 
 - Protecting routes can be done generally by checking for the session and taking an action if an active session is not found, like redirecting the user to the login page or simply returning a 401: Unauthenticated response.
 - Here are some common methods to protect routes:
 - 1. Client-Side Protection:
@@ -4804,4 +4804,657 @@ export async function deleteAuction(id:string) {
 
 ```
 
+## Creating the Bidding Service 
+- We will take a look at the following :
+- Background Services 
+- gRPC 
+- We will create a Bidding Service Project and will configure JwtBearer Authentication and RabbitMq inside of it. 
+-  We will also create a BidsController that has 2 methods inside of it: PlaceBid() and GetBidsForAuction()
+-  We will also create a consumer called AuctionCreatedConsumer inside the BiddingService to consume the AuctionCreated event 
+- Inside the PlaceBid() method we will also publish a BidPlaced event which will be consumed by BidConsumer inside the AuctionService and SearchService 
+```c#
+//Auction Created Consumer 
+using BiddingService.Models;
+using Contracts;
+using MassTransit;
+using MongoDB.Entities;
 
+namespace BiddingService.Consumers;
+
+public class AuctionCreatedConsumer : IConsumer<AuctionCreated>
+{
+    public async Task Consume(ConsumeContext<AuctionCreated> context)
+    {
+        var auction = new Auction
+        {
+            ID = context.Message.Id.ToString(),
+            Seller = context.Message.Seller,
+            AuctionEnd = context.Message.AuctionEnd,
+            ReservePrice = context.Message.ReservePrice,
+        };
+
+        await auction.SaveAsync();
+    }
+}
+
+
+//BidsController.cs 
+using AutoMapper;
+using BiddingService.DTOs;
+using BiddingService.Models;
+using Contracts;
+using MassTransit;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using MongoDB.Entities;
+
+namespace BiddingService.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class BidsController(IMapper mapper, IPublishEndpoint publishEndpoint):ControllerBase
+{
+    [Authorize]
+    [HttpPost]
+    public async Task<ActionResult<BidDto>> PlaceBid(string auctionId, int amount)
+    {
+        var auction = await DB.Find<Auction>().OneAsync(auctionId);
+        if (auction == null)
+        {
+            //TODO: check with auction service if that has auction
+            return NotFound();
+        }
+
+        if (auction.Seller == User.Identity.Name)
+        {
+            return BadRequest("You cannot place bids on your own auction");
+        }
+
+        var bid = new Bid
+        {
+            Amount = amount,
+            AuctionId = auctionId,
+            Bidder = User.Identity.Name,
+        };
+        if (auction.AuctionEnd < DateTime.UtcNow)
+        {
+            bid.BidStatus = BidStatus.Finished;
+        }
+        else
+        {
+            var highBid = await DB.Find<Bid>()
+                .Match(x => x.AuctionId == auctionId)
+                .Sort(y=>y.Descending(z=>z.Amount))
+                .ExecuteFirstAsync();
+
+            if (highBid != null && amount > highBid.Amount || highBid == null)
+            {
+                bid.BidStatus = amount > auction.ReservePrice
+                    ? BidStatus.Accepted
+                    : BidStatus.AcceptedBelowReserve;
+            }
+
+            if (highBid != null && bid.Amount <= highBid.Amount)
+            {
+                bid.BidStatus = BidStatus.TooLow;
+            }
+        }
+        
+        await DB.SaveAsync(bid);
+        
+        //Publish Bid Placed Event
+        await publishEndpoint.Publish(mapper.Map<BidPlaced>(bid));
+        
+        return Ok(mapper.Map<BidDto>(bid));
+    }
+
+    [HttpGet]
+    [Route("{auctionId}")]
+    public async Task<ActionResult<List<BidDto>>> GetBidsForAuction(string auctionId)
+    {
+        var bids = await DB.Find<Bid>()
+            .Match(a => a.AuctionId == auctionId)
+            .Sort(y => y.Descending(a => a.BidTime))
+            .ExecuteAsync();
+        
+        return bids.Select(mapper.Map<BidDto>).ToList();
+    }
+}
+
+
+```
+- We need to create a background service that will check the auctions that have been finished  and mark them as finished. 
+- It will also then publish an Auction Finished Event. 
+- However please note this background service will run in singleton mode, but the MassTransit Publish Endpoint is a scoped service. 
+- To use a scoped service inside a singleton service, we need to use IServiceProvider interface. 
+- We can do it like this 
+```c# 
+ public interface IScopedService
+{
+    string GetScopedServiceID();
+}
+
+public class ScopedService : IScopedService
+{
+    private readonly string _scopedServiceID;
+
+    public ScopedService()
+    {
+        _scopedServiceID = Guid.NewGuid().ToString();
+    }
+
+    public string GetScopedServiceID()
+    {
+        return _scopedServiceID;
+    }
+}
+
+public interface ISingletonService
+{
+    string GetScopedServiceID();
+}
+
+public class SingletonService : ISingletonService
+{
+    private readonly IServiceProvider _serviceProvider;
+
+    public SingletonService(IServiceProvider serviceProvider)
+    {
+        _serviceProvider = serviceProvider;
+    }
+
+    public string GetScopedServiceID()
+    {
+        var scopedService = _serviceProvider.GetRequiredService<IScopedService>();
+        return scopedService.GetScopedServiceID();
+    }
+}
+
+
+//Register these services in Program.cs file like this 
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddScoped<IScopedService, ScopedService>();
+        services.AddSingleton<ISingletonService, SingletonService>();
+    }
+    
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        // Configure your application pipeline
+    }
+}
+
+
+
+```
+- IScopedService and ScopedService: This is your scoped service. Each HTTP request will get a new instance of this service.
+- ISingletonService and SingletonService: This is your singleton service. It will be instantiated once and shared across all HTTP requests.
+- IServiceProvider: The IServiceProvider instance is injected into the singleton service to resolve the scoped service whenever it's needed. 
+- This approach ensures that the scoped service's lifetime is respected while being used in a singleton service.
+
+- We will create a Background service called CheckAuctionFinished as follows: 
+  
+  ```c# 
+  using BiddingService.Models;
+    using Contracts;
+    using MassTransit;
+    using MongoDB.Entities;
+
+    namespace BiddingService.Services;
+
+    public class CheckAuctionFinished(ILogger<CheckAuctionFinished> logger, IServiceProvider services) : BackgroundService
+    {
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        logger.LogInformation("Starting check for finished auctions");
+        stoppingToken.Register(() => logger.LogInformation(" ==> Stopping check for finished auctions"));
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await CheckAuctions(stoppingToken);
+            await Task.Delay(5000,stoppingToken);
+        }
+     }
+
+         private async Task CheckAuctions(CancellationToken stoppingToken)
+        {
+         var finishedAuctions = await DB.Find<Auction>()
+            .Match(x=>x.AuctionEnd <= DateTime.UtcNow)
+            .Match(x=>!x.Finished)
+            .ExecuteAsync(stoppingToken);
+        
+        if(finishedAuctions.Count() == 0) return;
+        logger.LogInformation($"==>Found Finished auctions: {finishedAuctions.Count()}");
+        using var scope = services.CreateScope();
+        var endpoint = scope.ServiceProvider.GetRequiredService<IPublishEndpoint>();
+        foreach (var auction in finishedAuctions)
+        {
+            auction.Finished = true;
+            await auction.SaveAsync(null,stoppingToken);
+            
+            var winningBid = await DB.Find<Bid>()
+                .Match(x=>x.AuctionId == auction.ID)
+                .Match(b=>b.BidStatus == BidStatus.Accepted)
+                .Sort(x=>x.Descending(s=>s.Amount))
+                .ExecuteFirstAsync(stoppingToken);
+            
+            await endpoint.Publish(new AuctionFinished
+            {
+                ItemSold = winningBid != null,
+                AuctionId = auction.ID,
+                Winner = winningBid?.Bidder,
+                Amount = winningBid?.Amount ?? 0,
+                Seller = auction.Seller
+            },stoppingToken);
+        }
+        
+        }
+     }
+  ```  
+
+
+
+## Using GRPC to communicate with Auction Service from Bidding Service. 
+- Another way our services can communicate with each other 
+- Google Remote Procedure Call 
+- HTTP/2 protocol to transport binary messages(over TLS)
+- HTTP/2 uses TLS by default. 
+- If we want to do GRPC over HTTP, we will have to tweak it. 
+- Focussed on High Performance 
+- 7 times faster than REST API communication. 
+- Messages are binary in nature. No need for HTTP Request/Response messages. 
+- Used for synchronous communication between microservices. 
+- Relies on Protocol buffers(contracts between services)
+- Multi-language support. 
+- Used for service to service synchronous communication 
+- Not used for communication between browser and server(have grpc web for that)
+- ![alt text](image-63.png)
+
+## Implementing GRPC Services with ASP.NET Core 
+- Kestrel doesnot support HTTP/2 with TLS on MACOS before .NET 8. 
+- The ASP.NET Core grpc template and samples use TLS by default. 
+- Kestrel GRPC Endpoints require HTTP/2 and it should be secured with Transport Layer Security (TLS)
+
+### Configuring the GRPC Server in the Auction Service 
+- First step is to install Grpc.AspnetCore package in Auction Service 
+- Next step is to create an auctions.proto file like this 
+```js
+ syntax = "proto3";
+option csharp_namespace = "AuctionService";
+        
+service GrpcAuction {
+  rpc GetAuction(GetAuctionRequest) returns (GrpcAuctionResponse);
+}
+
+message GetAuctionRequest {
+  string id = 1;
+}
+
+message GrpcAuctionModel {
+  string id = 1;
+  string seller = 2;
+  string auctionEnd = 3;
+  int32 reservePrice = 4;
+}
+
+message GrpcAuctionResponse {
+  GrpcAuctionModel auction = 1;
+}
+
+```
+- Next step is to update AuctionService.csproj to tell it about the proto file
+- Add the below mentioned code. 
+```c# 
+<ItemGroup>
+  <Protobuf Include = "protos/auctions.proto" GrpcServices = "Server" />
+  </ItemGroup>
+
+```
+- Next Step is to create an GrpcAuctionService that will implement the contracts defined in the auctions.proto file 
+```c# 
+ using System.Globalization;
+using AuctionService.Data;
+using Grpc.Core;
+
+namespace AuctionService.Services;
+
+public class GrpcAuctionService(AuctionDbContext dbContext) : GrpcAuction.GrpcAuctionBase
+{
+    public override async Task<GrpcAuctionResponse> GetAuction(GetAuctionRequest request, ServerCallContext context)
+    {
+        Console.WriteLine("==> Received Grpc Request for Auction");
+        var auction = await dbContext.Auctions.FindAsync(Guid.Parse(request.Id));
+        if(auction == null) throw new RpcException(new Status(StatusCode.NotFound, "Auction not found"));
+        var response = new GrpcAuctionResponse
+        {
+            Auction = new GrpcAuctionModel
+            {
+                Id = auction.Id.ToString(),
+                AuctionEnd = auction.AuctionEnd.ToString(CultureInfo.InvariantCulture),
+                ReservePrice = auction.ReservePrice,
+                Seller = auction.Seller,
+            },
+        };
+        return response;
+    }
+}
+
+```
+- Finally we need to configure Kestrel to start a Grpc connection over HTTP/2 at a different port and run the AuctionService WebApi Application in a different port over HTTP 
+- We will specify the Kestrel configuration in appsettings.Development.json file 
+```js 
+  "Kestrel": {
+    "Endpoints": {
+      "Grpc": {
+        "Protocols": "Http2",
+        "Url": "http://localhost:7777"
+      },
+      "WebApi": {
+        "Protocols": "Http1",
+        "Url": "http://localhost:7001"
+      }
+    }
+  }
+
+
+```
+- Finally we need to let the application know about Grpc Routes in Program.cs file of AuctionService like this 
+```c#
+ builder.Services.AddGrpc();
+ app.MapGrpcService<GrpcAuctionService>();
+
+```
+
+## Configuration of the Grpc Client 
+- Need to install different packages for Grpc.Client 
+- google.protobuf 
+- Grpc.Net.Client
+- Grpc.Tools 
+
+- We will create a proto/auctions.proto file same as the auction service above and copy over the contents of that file into this file. 
+- We will configure the BiddingService.csproj file as follows: 
+```c# 
+ <ItemGroup>
+    <Protobuf Include = "protos/auctions.proto" GrpcServices = "Client" />
+  </ItemGroup>
+
+```
+- Next we will create a GrpcAuctionClient.cs file as follows: 
+```c# 
+ using AuctionService;
+using BiddingService.Models;
+using Grpc.Net.Client;
+
+namespace BiddingService.Services;
+
+public class GrpcAuctionClient(ILogger<GrpcAuctionClient> logger, IConfiguration config)
+{
+    public Auction GetAuction(string id)
+    {
+        logger.LogInformation($"Calling Grpc Service");
+        var channel = GrpcChannel.ForAddress(config["GrpcAuction"]);
+        var client = new GrpcAuction.GrpcAuctionClient(channel);
+        var request = new GetAuctionRequest
+        {
+            Id = id
+        };
+
+        try
+        {
+            var reply = client.GetAuction(request);
+            var auction = new Auction
+            {
+                ID = reply.Auction.Id,
+                AuctionEnd = DateTime.Parse(reply.Auction.AuctionEnd),
+                Seller = reply.Auction.Seller,
+                ReservePrice = reply.Auction.ReservePrice
+            };
+            return auction;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Could not call Grpc Server");
+            return null;
+        }
+    }
+    
+}
+
+```
+- Next step is to setup the GrpcClient in Program.cs file as follows :
+```c#
+ builder.Services.AddScoped<GrpcAuctionClient>();
+
+```
+- Now we will utilize this GrpcAuctionClient to call the GrpcAuctionServer Service and get the Auction as follows: 
+```c#
+ using AutoMapper;
+using BiddingService.DTOs;
+using BiddingService.Models;
+using BiddingService.Services;
+using Contracts;
+using MassTransit;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using MongoDB.Entities;
+
+namespace BiddingService.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class BidsController(IMapper mapper, IPublishEndpoint publishEndpoint, GrpcAuctionClient grpcClient):ControllerBase
+{
+    [Authorize]
+    [HttpPost]
+    public async Task<ActionResult<BidDto>> PlaceBid(string auctionId, int amount)
+    {
+        var auction = await DB.Find<Auction>().OneAsync(auctionId);
+        if (auction == null)
+        {
+            //TODO: check with auction service if that has auction
+            //return NotFound();
+            auction = grpcClient.GetAuction(auctionId);
+            if (auction == null)
+            {
+                return BadRequest("Cannot accept bids on this auction at this time");
+            }
+        }
+
+        if (auction.Seller == User.Identity.Name)
+        {
+            return BadRequest("You cannot place bids on your own auction");
+        }
+
+        var bid = new Bid
+        {
+            Amount = amount,
+            AuctionId = auctionId,
+            Bidder = User.Identity.Name,
+        };
+        if (auction.AuctionEnd < DateTime.UtcNow)
+        {
+            bid.BidStatus = BidStatus.Finished;
+        }
+        else
+        {
+            var highBid = await DB.Find<Bid>()
+                .Match(x => x.AuctionId == auctionId)
+                .Sort(y=>y.Descending(z=>z.Amount))
+                .ExecuteFirstAsync();
+
+            if (highBid != null && amount > highBid.Amount || highBid == null)
+            {
+                bid.BidStatus = amount > auction.ReservePrice
+                    ? BidStatus.Accepted
+                    : BidStatus.AcceptedBelowReserve;
+            }
+
+            if (highBid != null && bid.Amount <= highBid.Amount)
+            {
+                bid.BidStatus = BidStatus.TooLow;
+            }
+        }
+        
+        await DB.SaveAsync(bid);
+        
+        //Publish Bid Placed Event
+        await publishEndpoint.Publish(mapper.Map<BidPlaced>(bid));
+        
+        return Ok(mapper.Map<BidDto>(bid));
+    }
+
+    [HttpGet]
+    [Route("{auctionId}")]
+    public async Task<ActionResult<List<BidDto>>> GetBidsForAuction(string auctionId)
+    {
+        var bids = await DB.Find<Bid>()
+            .Match(a => a.AuctionId == auctionId)
+            .Sort(y => y.Descending(a => a.BidTime))
+            .ExecuteAsync();
+        
+        return bids.Select(mapper.Map<BidDto>).ToList();
+    }
+}
+
+```
+
+## Updating the Gateway Service
+- Update appsettings.json file as follows 
+```json 
+   "bidsWrite": {
+        "ClusterId": "bids",
+        "AuthorizationPolicy": "default",
+        "Match": {
+          "Path": "/bids",
+          "Methods": ["POST"]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/bids"
+          }
+        ]
+      },
+      "bidsRead": {
+        "ClusterId": "bids",
+        "Match": {
+          "Path": "/bids/{**catch-all}",
+          "Methods": ["GET"]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/bids/{**catch-all}"
+          }
+        ]
+      }
+
+```
+- Update appSettings.Development.json and appSettings.Docker.json as follows: 
+```json 
+//appsettings.Docker.json 
+ "bids": {
+        "Destinations": {
+          "bidApi": {
+            "Address": "http://bid-svc"
+          }
+        }
+      }
+
+//appsettings.Development.json 
+ "bids": {
+        "Destinations": {
+          "bidApi": {
+            "Address": "http://localhost:7003"
+          }
+        }
+      }
+
+```
+
+## Dockerizing the Bidding Service 
+- We will create a docker file for Bidding Service as follows: 
+```shell 
+ FROM mcr.microsoft.com/dotnet/sdk:8.0 as build
+# This is a directory inside docker
+WORKDIR /app
+# This is a port inside docker
+EXPOSE 80
+
+# copy all .csproj files and restore as distinct layers. Use the same
+# COPY command for every dockerfile in the project to take advantage of docker
+# caching
+COPY Carsties.sln Carsties.sln
+COPY src/AuctionService/AuctionService.csproj src/AuctionService/AuctionService.csproj
+COPY src/SearchService/SearchService.csproj src/SearchService/SearchService.csproj
+COPY src/GatewayService/GatewayService.csproj src/GatewayService/GatewayService.csproj
+COPY src/BiddingService/BiddingService.csproj src/BiddingService/BiddingService.csproj
+COPY src/IdentityService/IdentityService.csproj src/IdentityService/IdentityService.csproj
+COPY src/Contracts/Contracts.csproj src/Contracts/Contracts.csproj
+
+# Restore package dependencies
+RUN dotnet restore Carsties.sln
+
+# Copy the app folders over 
+COPY src/BiddingService src/BiddingService
+COPY src/Contracts src/Contracts
+
+WORKDIR /app/src/BiddingService
+RUN dotnet publish -c Release -o /app/src/out
+
+# Build runtime image
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY --from=build /app/src/out .
+ENTRYPOINT ["dotnet","BiddingService.dll"]
+
+```
+- Next we will update docker compose file as follows :
+```shell 
+//Add the bid-svc 
+  bid-svc:
+    image: nishant198509/bid-svc:latest
+    build:
+      context: .
+      dockerfile: src/BiddingService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - RabbitMq__Host=rabbitmq
+      - ConnectionStrings__BidDbConnection=mongodb://root:mongopw@mongodb
+      - IdentityServiceUrl=http://identity-svc
+      - GrpcAuction=http://auction-svc:7777
+    ports:
+      - 7003:80
+    depends_on:
+      - mongodb
+      - rabbitmq
+
+
+//Update the auction-svc to support Grpc Server configuration 
+
+  auction-svc:
+    image: nishant198509/auction-svc:latest
+    build:
+      context: .
+      dockerfile: src/AuctionService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - ASPNETCORE_URLS=http://+:7777
+      - RabbitMq__Host=rabbitmq
+      - ConnectionStrings__DefaultConnection=Server=postgres:5432;User Id=postgres;Password=postgrespw;Database=auctions
+      - IdentityServiceUrl=http://identity-svc
+      - Kestrel__Endpoints__Grpc__Protocols=Http2
+      - Kestrel__Endpoints__Grpc__Url=http://+:7777
+      - Kestrel__Endpoints__WebApi__Protocols=Http1
+      - Kestrel__Endpoints__WebApi__Url=http://+:80
+    ports:
+      - 7001:80
+      - 7777:7777
+    depends_on:
+      - postgres
+      - rabbitmq
+
+
+```

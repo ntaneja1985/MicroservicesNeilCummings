@@ -1,35 +1,21 @@
-using System.Runtime.Intrinsics.X86;
-using AuctionService.Consumers;
-using AuctionService.Data;
-using AuctionService.Services;
-using Contracts;
+using AuctionService;
+using BiddingService.Consumers;
+using BiddingService.Services;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.EntityFrameworkCore;
+using MongoDB.Driver;
+using MongoDB.Entities;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
+
 builder.Services.AddControllers();
-
-builder.Services.AddDbContext<AuctionDbContext>(opt =>
-{
-    opt.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"));
-});
-
-builder.Services.AddAutoMapper(AppDomain.CurrentDomain.GetAssemblies());
 
 builder.Services.AddMassTransit(x =>
 {
-    x.AddEntityFrameworkOutbox<AuctionDbContext>(opt =>
-    {
-        opt.QueryDelay = TimeSpan.FromSeconds(10);
-        opt.UsePostgres();
-        opt.UseBusOutbox();
-    });
-    
-    x.AddConsumersFromNamespaceContaining<AuctionCreatedFaultConsumer>();
-    x.SetEndpointNameFormatter(new KebabCaseEndpointNameFormatter("auction",false));
+    x.AddConsumersFromNamespaceContaining<AuctionCreatedConsumer>();
+    x.SetEndpointNameFormatter(new KebabCaseEndpointNameFormatter("bids",false));
     
     x.UsingRabbitMq((context, cfg) =>
     {
@@ -51,28 +37,20 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         opt.TokenValidationParameters.ValidateAudience = false;
         opt.TokenValidationParameters.NameClaimType = "username";
     });
+// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+builder.Services.AddEndpointsApiExplorer();
 
-builder.Services.AddGrpc();
+builder.Services.AddAutoMapper(AppDomain.CurrentDomain.GetAssemblies());
+builder.Services.AddHostedService<CheckAuctionFinished>();
+builder.Services.AddScoped<GrpcAuctionClient>();
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 
-app.UseAuthentication();
-
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapGrpcService<GrpcAuctionService>();
 
-try
-{
- DbInitializer.InitDb(app);
-}
-catch (Exception ex)
-{
-    Console.WriteLine(ex);
-}
+await DB.InitAsync("BidDb",MongoClientSettings.FromConnectionString(builder.Configuration.GetConnectionString("BidDbConnection")));
 
 app.Run();
-
-
