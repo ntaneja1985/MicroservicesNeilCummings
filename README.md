@@ -5458,3 +5458,131 @@ ENTRYPOINT ["dotnet","BiddingService.dll"]
 
 
 ```
+
+## Adding a SignalR Service 
+- ![alt text](image-64.png)
+- Provides real time communication between client app and Backend services 
+- ![alt text](image-65.png)
+- Uses WebSockets, SSR or Long Polling 
+- We will create a NotificationService Project and install MassTransit.RabbitMq package inside it. 
+- Then we will create a NotificationHub inside it 
+```c# 
+ using Microsoft.AspNetCore.SignalR;
+
+namespace NotificationService.Hubs;
+
+public class NotificationHub : Hub
+{
+    
+}
+
+```
+- Then we will update Program.cs file to know where the Hub is and map it 
+```c#
+builder.Services.AddSignalR();
+var app = builder.Build();
+
+app.MapHub<NotificationHub>("/notifications");
+app.Run();
+```
+- Then in this project we will create our consumers to consume the AuctionCreated, AuctionFinished and BidPlaced events. 
+- Our notification service will consume these events, then using SignalR send out these events to all the clients connected to the hub. 
+
+```c#
+//Auction Created Consumer
+using Contracts;
+using MassTransit;
+using Microsoft.AspNetCore.SignalR;
+using NotificationService.Hubs;
+
+namespace NotificationService.Consumers;
+
+public class AuctionCreatedConsumer(IHubContext<NotificationHub> hubContext):IConsumer<AuctionCreated>
+{
+    public async Task Consume(ConsumeContext<AuctionCreated> context)
+    {
+        Console.WriteLine($"==> auction created message received: {context.Message.Id}");
+        await hubContext.Clients.All.SendAsync("AuctionCreated", context.Message);
+    }
+}
+
+//Auction Finished Consumer 
+using Contracts;
+using MassTransit;
+using Microsoft.AspNetCore.SignalR;
+using NotificationService.Hubs;
+
+namespace NotificationService.Consumers;
+
+public class AuctionFinishedConsumer(IHubContext<NotificationHub> hubContext):IConsumer<AuctionFinished>
+{
+    public async Task Consume(ConsumeContext<AuctionFinished> context)
+    {
+        Console.WriteLine($"==> auction finished message received: {context.Message.AuctionId}");
+        await hubContext.Clients.All.SendAsync("AuctionFinished", context.Message);
+    }
+}
+
+//Bid Placed Consumer 
+using Contracts;
+using MassTransit;
+using Microsoft.AspNetCore.SignalR;
+using NotificationService.Hubs;
+
+namespace NotificationService.Consumers;
+
+public class BidPlacedConsumer(IHubContext<NotificationHub> hubContext):IConsumer<BidPlaced>
+{
+    public async Task Consume(ConsumeContext<BidPlaced> context)
+    {
+        Console.WriteLine($"==> Bid placed message received: {context.Message.AuctionId}");
+        await hubContext.Clients.All.SendAsync("BidPlaced", context.Message);
+    }
+}
+
+
+```
+- We will also configure RabbitMq inside Program.cs file of NotificationService. 
+
+### Configuring CORS for NotificationService in Gateway Service 
+- So far we havent needed to configure CORS for any of our services. 
+- This is because our client browser connects to the Next.js server to get the data which is of the same origin. 
+- However, in case of notification hub, our client browser will make a direct TCP/IP connection to our NotificationHub using websockets. 
+- So our browser will connect to a cross origin and we need to configure it to allow cross origin requests. 
+- Since our notification service will be accessed through gateway service, we will have to configure it inside our gateway service. 
+- We will add the following code to Program.cs file of GatewayService: 
+```c#
+ builder.Services.AddCors(opt =>
+{
+    opt.AddPolicy("customPolicy", b =>
+    {
+        b.AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials()
+            .WithOrigins(builder.Configuration["ClientApp"]);
+    });
+});
+var app = builder.Build();
+
+app.UseCors();
+app.MapReverseProxy();
+app.UseAuthentication();
+app.UseAuthorization();
+app.Run();
+
+```
+- We will also add the Cors Policy inside our Yarp Reverse Proxy configuration in appSettings.json like this 
+```json 
+  "notifications": {
+        "ClusterId": "notifications",
+        "CorsPolicy": "customPolicy",
+        "Match": {
+          "Path": "/notifications/{**catch-all}"
+        }
+      }
+
+```
+- Then we will create a Dockerfile for NotificationService similar to all the other services and add it to docker compose file as well. 
+
+## Adding Bids/Notifications to the Client App 
+
