@@ -5585,4 +5585,801 @@ app.Run();
 - Then we will create a Dockerfile for NotificationService similar to all the other services and add it to docker compose file as well. 
 
 ## Adding Bids/Notifications to the Client App 
+- We will create an AuctionStore first to get the list of auctions and set the current price to the current high bid 
+```js 
+ import {Auction, PagedResult} from "@/types";
+import {create} from "zustand/react";
 
+type State = {
+    auctions : Auction[]
+    totalCount: number
+    pageCount: number
+}
+
+type Actions = {
+    setData: (data: PagedResult<Auction>) => void
+    setCurrentPrice : (auctionId: string, amount: number) => void
+}
+
+const initialState: State = {
+    auctions: [],
+    pageCount: 0,
+    totalCount: 0
+}
+
+export const useAuctionStore = create<State & Actions>((set) => ({
+    ...initialState,
+    setData: (data: PagedResult<Auction>) => {
+        set(() => ({
+            auctions: data.results,
+            totalCount: data.totalCount,
+            pageCount: data.pageCount
+        }))
+    },
+    setCurrentPrice: (auctionId, amount) => {
+        set((state) => ({
+            auctions: state.auctions.map((auction) => auction.id === auctionId
+            ? {...auction,currentHighBid: amount} : auction)
+        }))
+    }
+}))
+
+```
+- We will also update the auctionActions server actions to get the List of Bids for the Current Auction 
+```js 
+ export async function getBidsForAuction(id:string): Promise<Bid[]>{
+    return await fetchWrapper.get(`bids/${id}`);
+}
+
+```
+- We will create a type for Bid as follows:
+```js 
+  export type Bid = {
+    id:string
+    auctionId:string
+    bidder:string
+    bidType: string
+    amount: number
+    bidStatus: string
+    bidTime: string
+}
+
+```
+- In the Bid Details Page, we will get the list of bids for the Auction like this :
+```js 
+ export default async function Details({params}:{params:{id:string}}) {
+    const data = await getDetailedViewData(params.id);
+    const user = await getCurrentUser();
+    const bids = await getBidsForAuction(params.id);
+
+    return (
+        <div>
+            <div className="flex justify-between">
+                <div className="flex items-center gap-3">
+                    <Heading title={`${data.make} ${data.model}`}/>
+                    {user?.username === data.seller && (
+                        <>
+                            <EditButton id ={data.id}/>
+                            <DeleteButton id ={data.id}/>
+                        </>
+
+                    )}
+                </div>
+
+            <div className='flex gap-3'>
+                <h3 className='text-2xl font-semibold'>Time remaining:</h3>
+                <CountdownTimer auctionEnd={data.auctionEnd}/>
+            </div>
+            </div>
+            <div className='grid grid-cols-2 gap-6 mt-3'>
+                <div className='w-full bg-gray-200 relative aspect-[4/3] rounded-lg overflow-hidden'>
+                    <CarImage imageUrl={data.imageUrl} />
+                </div>
+                <div className='border-2 rounded-lg p-2 bg-gray-100'>
+                    <Heading title="Bids"/>
+                    {bids.map(bid => (
+                        <BidItem bid={bid} key={bid.id}/>
+                    ))}
+                </div>
+            </div>
+            <div className='mt-3 grid grid-cols-1 rounded-lg '>
+            <DetailedSpecs auction={data}/>
+            </div>
+
+        </div>
+    )
+}
+
+
+
+//BidItem component 
+ import React from 'react'
+import {Bid} from "@/types";
+import {format} from "date-fns/format";
+import {numberWithCommas} from "@/app/lib/numberWithComma";
+type Props = {
+    bid: Bid
+}
+export default function BidItem({bid}: Props) {
+
+    function getBidInfo(){
+        let bgColor = '';
+        let text = '';
+        switch (bid.bidStatus) {
+            case 'Accepted':
+                bgColor = 'bg-green-200';
+                text = 'Bid accepted';
+                break;
+            case 'AcceptedBelowReserve':
+                bgColor = 'bg-amber-200';
+                text = 'Reserve not met';
+                break;
+            case 'TooLow':
+                bgColor = 'bg-red-200';
+                text = 'Bid was too low';
+                break;
+            default:
+                bgColor = 'bg-red-200';
+                text = 'Bid placed after auction finished';
+                break;
+        }
+        return {bgColor,text};
+    }
+
+    return (
+        <div className={`
+        border-gray-300 border-2 px-3 py-2 rounded-lg
+        flex justify-between items-center mb-2
+        ${getBidInfo().bgColor}
+        `}>
+            <div className='flex flex-col'>
+                <span>Bidder: {bid.bidder}</span>
+                <span className='text-gray-700 text-sm'>Time: {format(new Date(bid.bidTime), 'dd MMM yyyy h:mm a') }</span>
+            </div>
+            <div className='flex flex-col text-right'>
+                <div className='text-xl font-semibold'>
+                    ${numberWithCommas(bid.amount)}
+                </div>
+                <div className='flex flex-row items-center'>
+                    <span>{getBidInfo().text}</span>
+                </div>
+            </div>
+        </div>
+    )
+}
+
+
+```
+
+## Creating a Bid Store
+- Next step is to put our bids somewhere so we will create our store for the bids 
+- This store will have the list of bids as well as the methods to set the List of Bids and add a bid to the List of bids 
+```js 
+ import {Bid} from "@/types";
+import {create} from "zustand/react";
+
+type State = {
+    bids : Bid[]
+}
+
+type Actions = {
+    setBids: (bids : Bid[]) => void
+    addBid: (bid: Bid) => void
+}
+
+export const useBidStore = create<State & Actions>((set)=>({
+    bids:[],
+    setBids:(bids:Bid[]) =>{
+        set(()=>({
+            bids:bids
+        }))
+    },
+    addBid:(bid: Bid) =>{
+        set((state)=>({
+            //Check if the bid already exists in the list of bids, if not add it to the top of the bids[] else just return existing list of bids
+            bids: !state.bids.find(x=>x.id==bid.id) ? [bid,...state.bids]: [...state.bids]
+    }))
+    },
+}))
+
+```
+- Now we will display the list of bids on the Auction Details page as its own client component. 
+- This component will accept the props of user and the auction and get the list of bids from the server auction,set them inside the bids store and display them accordingly. 
+```js 
+ 'use client'
+
+import {User} from "next-auth";
+import {Auction, Bid} from "@/types";
+import {useBidStore} from "@/hooks/useBidStore";
+import {useEffect, useState} from "react";
+import {getBidsForAuction} from "@/app/actions/auctionActions";
+import toast from "react-hot-toast";
+import Heading from "@/app/components/Heading";
+import BidItem from "@/app/auctions/details/[id]/BidItem";
+
+type Props = {
+    user: User | null
+    auction: Auction
+}
+export default function BidList({user, auction}: Props) {
+    const [loading,setLoading] = useState<boolean>(true);
+    const bids = useBidStore(state => state.bids);
+    const setBids = useBidStore(state => state.setBids);
+
+    useEffect(() => {
+        getBidsForAuction(auction.id)
+            .then((res:any) => {
+                if(res.error) {
+                    throw res.error;
+                }
+                setBids(res as Bid[]);
+            }).catch(err => {
+                toast.error(err.message);
+        }).finally(() => setLoading(false));
+    }, [auction.id, setLoading,setBids]);
+
+    if(loading){
+        return <span>Loading Bids...</span>;
+    }
+    return (
+            <div className='border-2 rounded-lg p-2 bg-gray-100'>
+                <Heading title="Bids"/>
+                {bids.map(bid => (
+                    <BidItem bid={bid} key={bid.id}/>
+                ))}
+            </div>
+    )
+}
+
+
+
+```
+
+## Creating a bid form to place bids 
+- First we will create the server action to place a bid 
+```js 
+ export async function placeBidForAuction(auctionId:string, amount:number) {
+    return await fetchWrapper.post(`bids?auctionId=${auctionId}&amount=${amount}`,{});
+}
+
+```
+- Then we will create a bid form like this 
+```js 
+ 'use client'
+import {FieldValues, useForm} from "react-hook-form";
+import {useBidStore} from "@/hooks/useBidStore";
+import {placeBidForAuction} from "@/app/actions/auctionActions";
+import {numberWithCommas} from "@/app/lib/numberWithComma";
+
+type Props = {
+    auctionId: string
+    highBid: number
+}
+export default function BidForm({ auctionId,highBid }: Props) {
+    const {register,handleSubmit,reset,formState:{errors}} = useForm();
+    const addBid = useBidStore(state =>state.addBid);
+
+    function onSubmit(data:FieldValues)
+    {
+        placeBidForAuction(auctionId,+data.amount).then(bid => {
+            addBid(bid);
+            reset();
+        })
+    }
+    return (
+        <form onSubmit={handleSubmit(onSubmit)} className='flex items-center border-2 rounded-lg py-2'>
+            <input type='number' {...register('amount')}
+                   className='input-custom text-sm text-gray-600'
+                   placeholder={`Enter your bid (minimum bid is $ ${numberWithCommas(highBid + 1)})`}
+                   name='amount' />
+        </form>
+    )
+}
+
+
+```
+- Then we will display the Add Bid Form inside the Bid List component 
+```js 
+ 'use client'
+
+import {User} from "next-auth";
+import {Auction, Bid} from "@/types";
+import {useBidStore} from "@/hooks/useBidStore";
+import {useEffect, useState} from "react";
+import {getBidsForAuction} from "@/app/actions/auctionActions";
+import toast from "react-hot-toast";
+import Heading from "@/app/components/Heading";
+import BidItem from "@/app/auctions/details/[id]/BidItem";
+import {numberWithCommas} from "@/app/lib/numberWithComma";
+import EmptyFilter from "@/app/components/EmptyFilter";
+import BidForm from "@/app/auctions/details/[id]/BidForm";
+
+type Props = {
+    user: User | null
+    auction: Auction
+}
+export default function BidList({user, auction}: Props) {
+    const [loading,setLoading] = useState<boolean>(true);
+    const bids = useBidStore(state => state.bids);
+    const setBids = useBidStore(state => state.setBids);
+
+//function to get the highest bid from the list of bids,here we reduce the list of bids to a single bid.
+    const highBid = bids.reduce(
+        (prev,current) =>
+        prev > current.amount
+            ? prev
+            : current.amount, 0);
+
+    useEffect(() => {
+        getBidsForAuction(auction.id)
+            .then((res:any) => {
+                if(res.error) {
+                    throw res.error;
+                }
+                setBids(res as Bid[]);
+            }).catch(err => {
+                toast.error(err.message);
+        }).finally(() => setLoading(false));
+    }, [auction.id, setLoading,setBids]);
+
+    if(loading){
+        return <span>Loading Bids...</span>;
+    }
+    return (
+            <div className='rounded-lg shadow-md'>
+                <div className='py-2 px-4 bg-white'>
+                    <div className='sticky top-0 bg-white p-2'>
+                        <Heading title={`Current high bid is $ ${numberWithCommas(highBid)}`}/>
+                    </div>
+                </div>
+
+                <div className='overflow-auto h-[400px] flex flex-col-reverse px-2'>
+                    {bids.length  == 0 ?
+                        (<EmptyFilter title='No bids for this item' subtitle='Please feel free to make a bid'/>)
+                        : ( <>
+                            {bids.map(bid => (
+                                <BidItem bid={bid} key={bid.id}/>
+                            ))}
+                            </>
+                            )
+                    }
+                </div>
+
+                <div className='px-2 pb-2 text-gray-500'>
+                    <BidForm auctionId={auction.id} highBid={highBid}/>
+                </div>
+
+            </div>
+    )
+}
+
+
+
+```
+
+## Aside How to create custom Tailwind CSS classes to use inside our code 
+- We can go to globals.css file and add our custom tailwind css classes like this 
+- Below we are creating a custom input class 
+```css 
+ @tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.react-datepicker-wrapper {
+    width: 100%;
+}
+
+@layer components {
+    .input-custom {
+        @apply  flex-grow pl-5 bg-transparent focus:outline-none border-transparent focus:border-transparent focus:ring-0
+    }
+}
+
+```
+- We can then use it like any other regular tailwind css class 
+```js 
+  <input type='number' {...register('amount')}
+                   className='input-custom text-sm text-gray-600'
+                   placeholder={`Enter your bid (minimum bid is $ ${numberWithCommas(highBid + 1)})`}
+                   name='amount' />
+
+```
+
+## Handling Errors while adding Bids 
+  - We will make changes to the handleError method inside fetchWrapper like this: 
+```js 
+ async function handleResponse(response: Response) {
+    const text = await response.text();
+    //const data = text && JSON.parse(text);
+    let data;
+    try {
+        data = text && JSON.parse(text);
+    }
+    catch (error)
+    {
+        data = text;
+    }
+    if(response.ok) {
+        return data || response.statusText;
+    } else {
+        const error = {
+            status: response.status,
+            message: typeof(data) === 'string' ? data : response.statusText
+        }
+        return {error};
+    }
+}
+
+
+```
+- We will also make changes to the onSubmit method inside the BidForm as follows: 
+```js 
+  function onSubmit(data:FieldValues)
+    {
+        placeBidForAuction(auctionId,+data.amount).then(bid => {
+            if(bid.error) throw bid.error;
+            addBid(bid);
+            reset();
+        }).catch(err=> toast.error(err.message));
+    }
+
+```
+
+## Adding SignalR to the client application 
+- We should all live updates to our application to get the live list of bids being placed on an auction. 
+- We should add client side signalR to our application. 
+- We need to install the following package to our application: 
+```shell 
+npm install @microsoft/signalr
+```
+- We need to add a SignalR provider which will make a connection to the signalR Hub and provide that connection to all the child components in our application.
+- What we can do is add the children prop to this provider(of type React.ReactNode) effectively wrapping our {children} inside this provider. 
+- We can then use SignalR provider inside the layout.tsx file. 
+- As you can see that we are using the AuctionStore and BidStore inside it 
+- This provider opens a connection to the notification hub of notification service. 
+- It is then consuming the 'BidPlaced' message from the hub coming from the BidPlacedConsumer.cs file. 
+- It is then using that bid data to update the current price for an auction using setCurrentPrice method of the useAuctionStore. 
+
+```js 
+//SignalRProvider.tsx 
+
+'use client'
+import React, {useEffect, useRef} from 'react'
+import {HubConnection, HubConnectionBuilder} from "@microsoft/signalr";
+import {useAuctionStore} from "@/hooks/useAuctionStore";
+import {useBidStore} from "@/hooks/useBidStore";
+import {useParams} from "next/navigation";
+import {Bid} from "@/types";
+type Props = {
+    children: React.ReactNode
+}
+export default function SignalRProvider({children}: Props) {
+    const connection = useRef<HubConnection | null>(null);
+    const setCurrentPrice = useAuctionStore(state => state.setCurrentPrice);
+    const addBid = useBidStore(state => state.addBid);
+    const params = useParams<{id:string}>();
+
+    useEffect(() => {
+        if(!connection.current)
+        {
+            connection.current = new HubConnectionBuilder()
+                .withUrl('http://localhost:6001/notifications')
+                .withAutomaticReconnect()
+                .build();
+            connection.current.start()
+                .then(()=> 'Connected to notification hub')
+                .catch(err => console.error(err));
+
+            connection.current.on('BidPlaced',(bid:Bid) => {
+                setCurrentPrice(bid.auctionId, bid.amount);
+            })
+        }
+    },[setCurrentPrice])
+
+    return (
+        children
+    )
+}
+
+
+
+```
+- We can then use it in layout.tsx file like this 
+```js 
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body
+      >
+      <ToasterProvider/>
+      <Navbar />
+      <main className="container mx-auto px-5 pt-10">
+          <SignalRProvider>
+              {children}
+          </SignalRProvider>
+      </main>
+      </body>
+    </html>
+  );
+}
+
+```
+
+## Adding a new bid to SignalR
+- Here on the Auction Details page in the BidList component, we want to display the bids 'live' as they are coming in from various users. 
+- In the SignalR provider component we are updating the bids being displayed for an auction as it comes in.
+- For that purpose we have a handleBidsPlaced method. 
+- When a component is re-rendered, all its functions get recreated as well. 
+- We only want handleBidPlaced method to be recreated when the current price is updated, or a new bid is added or if the route params change i.e the user navigates to a different auction. 
+- So we will placed this method inside a useCallback hook. 
+- Picture this: you're juggling tasks, and you want to make sure you're not repeating yourself unnecessarily. 
+- In the React world, that's where the useCallback hook swoops in. It's like giving your functions a sticky note that says, "Only change if these things change." 
+- Essentially, useCallback memoizes your callback functions, preventing them from being recreated on every render unless their dependencies change.
+- ![alt text](image-66.png)
+- By doing this, you help React optimize performance, especially when passing callbacks to child components that rely on reference equality to prevent unnecessary re-renders.
+- Overusing useCallback can add complexity without significant benefits. Think of it like saving every single receipt—you can, but do you really need to?
+- Also when we switch auctions we want to switch off the SignalR hub connection and recreate it again for the new auction. 
+- So we will have to use a cleanup function inside useEffect hook 
+- Now if we go and check, as the bids come in for an auction, if that particular auction page is open for any user, the user can see 'live' list of bids. 
+- If the user is on some other auction, he wont see anything come in inside the BidList component.  
+```js 
+
+'use client'
+import React, {useCallback, useEffect, useRef} from 'react'
+import {HubConnection, HubConnectionBuilder} from "@microsoft/signalr";
+import {useAuctionStore} from "@/hooks/useAuctionStore";
+import {useBidStore} from "@/hooks/useBidStore";
+import {useParams} from "next/navigation";
+import {Bid} from "@/types";
+type Props = {
+    children: React.ReactNode
+}
+export default function SignalRProvider({children}: Props) {
+    const connection = useRef<HubConnection | null>(null);
+    const setCurrentPrice = useAuctionStore(state => state.setCurrentPrice);
+    const addBid = useBidStore(state => state.addBid);
+    const params = useParams<{id:string}>();
+
+    const handleBidPlaced = useCallback((bid:Bid) =>{
+        if(bid.bidStatus.includes('Accepted')){
+            setCurrentPrice(bid.auctionId, bid.amount);
+        }
+
+        //check what is there in the router parameters using the useParams hook
+        if(params.id === bid.auctionId)
+        {
+            addBid(bid);
+        }
+    },[setCurrentPrice,addBid,params.id]);
+
+
+    useEffect(() => {
+        if(!connection.current)
+        {
+            connection.current = new HubConnectionBuilder()
+                .withUrl('http://localhost:6001/notifications')
+                .withAutomaticReconnect()
+                .build();
+            connection.current.start()
+                .then(()=> 'Connected to notification hub')
+                .catch(err => console.error(err));
+        }
+        connection.current.on('BidPlaced',handleBidPlaced);
+
+        //Cleanup the connection
+        return () => {
+            connection.current?.off('BidPlaced',handleBidPlaced);
+        }
+    },[handleBidPlaced])
+
+    return (
+        children
+    )
+}
+
+
+
+```
+- Similar to the BidPlaced event, we will consume 'AuctionCreated' and 'AuctionFinished' events as well 
+- We will create their own separate toast components and then subscribe to these events using client side signalR and show these toasts accordingly 
+
+```js 
+//AuctionCreatedToast
+import {Auction} from "@/types";
+import Link from "next/link";
+import Image from "next/image";
+
+type Props = {
+   auction: Auction
+}
+
+export default function AuctionCreatedToast({auction}: Props) {
+    return (
+        <Link href={`/auctions/details/${auction.id}`} className='flex flex-col items-center'>
+           <div className='flex flex-row items-center gap-2'>
+               <Image
+               src={auction.imageUrl}
+               alt='Image of car'
+               height={80}
+               width={80}
+               className='rounded-lg w-auto h-auto'
+               />
+               <span>New Auction! {auction.make} {auction.model} has been added</span>
+           </div>
+        </Link>
+    )
+}
+
+
+//AuctionFinishedToast
+import {Auction, AuctionFinished} from "@/types";
+import Link from "next/link";
+import Image from "next/image";
+import {numberWithCommas} from "@/app/lib/numberWithComma";
+
+type Props = {
+    finishedAuction: AuctionFinished,
+    auction: Auction,
+}
+
+export default function AuctionFinishedToast({auction,finishedAuction}: Props) {
+    return (
+        <Link href={`/auctions/details/${auction.id}`} className='flex flex-col items-center'>
+            <div className='flex flex-row items-center gap-2'>
+                <Image
+                    src={auction.imageUrl}
+                    alt='Image of car'
+                    height={80}
+                    width={80}
+                    className='rounded-lg w-auto h-auto'
+                />
+                <div className='flex flex-col'>
+                    <span>Auction for {auction.make} {auction.model} has finished</span>
+                    {finishedAuction.itemSold && finishedAuction.amount  ? (
+                        <p>Congrats to {finishedAuction.winner} who has won this auction for $${numberWithCommas(finishedAuction.amount)}</p>
+                    ):(
+                        <p>This item did not sell</p>
+                    )}
+                </div>
+
+            </div>
+        </Link>
+    )
+}
+
+
+
+//SignalRProvider code to handle these toasts
+const handleAuctionCreated = useCallback((auction:Auction) => {
+        if(user?.username !== auction.seller)
+        {
+            return toast(<AuctionCreatedToast auction={auction} />,{
+                duration: 10000,
+            })
+        }
+    },[user?.username])
+
+    const handleAuctionFinished = useCallback((finishedAuction:AuctionFinished) => {
+        const auction = getDetailedViewData(finishedAuction.auctionId);
+        return toast.promise(auction, {
+            loading:'loading',
+            success: (auction) =>
+                <AuctionFinishedToast
+                    finishedAuction={finishedAuction} auction={auction} />
+            , error: (err) => 'Auction Finished'
+        },{success: {duration:10000,icon:null}})
+    },[])
+
+ useEffect(() => {
+        if(!connection.current)
+        {
+            connection.current = new HubConnectionBuilder()
+                .withUrl('http://localhost:6001/notifications')
+                .withAutomaticReconnect()
+                .build();
+            connection.current.start()
+                .then(()=> 'Connected to notification hub')
+                .catch(err => console.error(err));
+        }
+        connection.current.on('BidPlaced',handleBidPlaced);
+        connection.current.on('AuctionCreated',handleAuctionCreated);
+        connection.current.on('AuctionFinished',handleAuctionFinished);
+
+        //Cleanup the connection
+        return () => {
+            connection.current?.off('BidPlaced',handleBidPlaced);
+            connection.current?.off('AuctionCreated',handleAuctionCreated);
+            connection.current?.off('AuctionFinished',handleAuctionFinished);
+        }
+    },[handleBidPlaced,handleAuctionCreated,handleAuctionFinished])
+
+
+```
+
+## Disabling the auction finished form when auction finishes 
+- We will use the useBidStore to store the state of whether the auction is open or not 
+```js 
+ type State = {
+    bids : Bid[]
+    open: boolean
+}
+
+type Actions = {
+    setBids: (bids : Bid[]) => void
+    addBid: (bid: Bid) => void
+    setOpen: (value:boolean) => void
+}
+
+export const useBidStore = create<State & Actions>((set)=>({
+    bids:[],
+    open: true,
+    setOpen:(value:boolean) =>{
+        set(()=>({
+            open: value
+        }))
+    }
+}))
+
+
+```
+- Next step is to update this state inside the Countdown timer component 
+```js 
+
+ export default function CountdownTimer({auctionEnd}:Props) {
+    const setOpen = useBidStore(state => state.setOpen);
+    const pathName = usePathname();
+
+    function AuctionFinished(){
+        console.log("Auction Finished triggered")
+
+        if(pathName.startsWith('/auction/details')){
+            setOpen(false);
+        }
+    }
+    return (
+        <div>
+            <Countdown date={auctionEnd} renderer={renderer} onComplete={AuctionFinished} />
+        </div>
+    )
+}
+
+```
+- Finally we will read the 'open' state property inside the BidList component like this 
+- So when the state updates, this component also updates. 
+```js 
+const open = useBidStore(state => state.open);
+const setOpen = useBidStore(state => state.setOpen);
+const openForBids = new Date(auction.auctionEnd) > new Date();
+
+useEffect(() => {
+        setOpen(openForBids);
+    }, [openForBids,setOpen]);
+
+<div className='px-2 pb-2 text-gray-500'>
+                    {!open ? (
+                        <div className='flex items-center justify-center p-2 text-lg font-semibold'>
+                            This auction has finished
+                        </div>
+                    ):(
+                        !user ? (
+                        <div className='flex items-center justify-center p-2 text-lg font-semibold'>
+                        Please login to make a bid
+                        </div>
+                        ): user && user.username === auction.seller ? (
+                        <div className='flex items-center justify-center p-2 text-lg font-semibold'>
+                        You cannot bid on your own auction
+                        </div>
+                        ) : (
+                        <BidForm auctionId={auction.id} highBid={highBid}/>
+                            )
+                    )}
+
+
+                </div>
+
+
+```

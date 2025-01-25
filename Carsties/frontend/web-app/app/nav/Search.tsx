@@ -33,10 +33,8 @@ export default function Search() {
                 }}
                 value={searchValue}
                 onChange={(event) => setSearchValue(event.target.value)}
-                className='flex-grow pl-5 bg-transparent  focus:outline-none
-                border-transparent
-                focus:border-transparent
-                focus:ring-0
+                className='
+                input-custom
                 text-sm
                 text-gray-600
                 '
