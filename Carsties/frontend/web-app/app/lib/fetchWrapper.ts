@@ -1,6 +1,7 @@
 import {auth} from "@/auth";
+import {CustomHeaders} from "@/types";
 
-const baseUrl = 'http://localhost:6001/';
+const baseUrl = process.env.API_URL;
 
 async function handleResponse(response: Response) {
     const text = await response.text();
@@ -11,6 +12,7 @@ async function handleResponse(response: Response) {
     }
     catch (error)
     {
+        console.log(error)
         data = text;
     }
     if(response.ok) {
@@ -26,12 +28,13 @@ async function handleResponse(response: Response) {
 
 async function getHeaders() {
     const session = await auth();
-    const headers = {
-        'Content-Type': 'application/json'
-    } as any;
+    const headers : CustomHeaders = {
+        'Content-Type': 'application/json',
+    };
     if(session?.accessToken) {
-        headers.Authorization = `Bearer ${session?.accessToken}`;
-    }
+        headers.Authorization =  `Bearer ${session?.accessToken}`
+        }
+
     return headers;
 }
 
@@ -45,7 +48,7 @@ async function get(url: string) {
     return handleResponse(response);
 }
 
-async function post(url: string, body: {}) {
+async function post(url: string, body: object) {
     const requestOptions = {
         method: 'POST',
         headers: await getHeaders(),
@@ -56,7 +59,7 @@ async function post(url: string, body: {}) {
     return handleResponse(response);
 }
 
-async function put(url: string, body: {}) {
+async function put(url: string, body: object) {
     const requestOptions = {
         method: 'PUT',
         headers: await getHeaders(),

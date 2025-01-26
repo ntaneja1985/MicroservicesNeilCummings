@@ -7,7 +7,7 @@ import DateInput from "@/app/components/DateInput";
 import {createAuction, updateAuction} from "@/app/actions/auctionActions";
 import {usePathname, useRouter} from "next/navigation";
 import toast from "react-hot-toast";
-import {Auction} from "@/types";
+import {Auction, ErrorMessage} from "@/types";
 
 
 
@@ -18,7 +18,7 @@ type Props = {
 export default function AuctionForm({auction}:Props) {
     // const {register, handleSubmit, setFocus, formState:{isSubmitting,isValid,isDirty,errors}} = useForm();
     const {control, handleSubmit, setFocus,reset,
-        formState:{isSubmitting,isValid,isDirty,errors}} =
+        formState:{isSubmitting,isValid}} =
         useForm({
         mode:'onTouched'
     });
@@ -30,7 +30,7 @@ export default function AuctionForm({auction}:Props) {
             reset({make,model,year,mileage,color})
         }
         setFocus('make')
-    },[setFocus]);
+    },[setFocus,auction,reset]);
     async function onSubmit(data: FieldValues) {
         try {
             console.log(data);
@@ -51,8 +51,9 @@ export default function AuctionForm({auction}:Props) {
            }
            router.push(`/auctions/details/${id}`);
         }
-        catch(error:any){
-            toast.error(error.status + ' '+ error.message);
+        catch(error: unknown){
+            const err = error as ErrorMessage;
+            toast.error(err.status + ' '+ err.message);
         }
     }
     return (

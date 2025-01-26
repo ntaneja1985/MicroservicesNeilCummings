@@ -18,7 +18,7 @@ public static class Config
             new ApiScope("auctionApp","Auction app full access")
         };
 
-    public static IEnumerable<Client> Clients =>
+    public static IEnumerable<Client> Clients(IConfiguration config) =>
         new Client[]
         {
             
@@ -40,7 +40,7 @@ public static class Config
                 AllowedGrantTypes = GrantTypes.CodeAndClientCredentials,
                 //Pkce is required in case of mobile applications not for web applications
                 RequirePkce = false,
-                RedirectUris = {"http://localhost:3000/api/auth/callback/id-server"},
+                RedirectUris = {config["ClientApp"]+"/api/auth/callback/id-server"},
                 //Allows us to use Refresh Token Functionality
                 AllowOfflineAccess = true,
                 AllowedScopes = {"openid", "profile","auctionApp"},

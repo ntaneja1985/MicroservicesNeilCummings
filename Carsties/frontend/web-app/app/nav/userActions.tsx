@@ -7,7 +7,7 @@ import {User} from 'next-auth'
 import {HiCog, HiUser} from "react-icons/hi";
 import {AiFillCar, AiFillTrophy, AiOutlineLogout} from "react-icons/ai";
 import {signOut} from "next-auth/react";
-import {useParams, usePathname, useRouter} from "next/navigation";
+import {usePathname, useRouter} from "next/navigation";
 import {useParamsStore} from "@/hooks/useParamsStore";
 
 

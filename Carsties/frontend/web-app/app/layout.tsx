@@ -20,6 +20,7 @@ export default async function RootLayout({
 }>) {
 
     const user = await getCurrentUser();
+    const notifyUrl=process.env.NOTIFY_URL;
   return (
     <html lang="en">
       <body
@@ -27,7 +28,7 @@ export default async function RootLayout({
       <ToasterProvider/>
       <Navbar />
       <main className="container mx-auto px-5 pt-10">
-          <SignalRProvider user={user}>
+          <SignalRProvider user={user} notifyUrl={notifyUrl!} >
               {children}
           </SignalRProvider>
       </main>

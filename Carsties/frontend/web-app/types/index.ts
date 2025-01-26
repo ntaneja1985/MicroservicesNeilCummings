@@ -40,3 +40,13 @@ winner? :string
 seller: string
 amount? : number
 }
+
+export type ErrorMessage = {
+    status: number
+    message: string
+}
+
+export type CustomHeaders =  {
+    'Content-Type': string;
+    Authorization?: string;
+}

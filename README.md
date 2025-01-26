@@ -6383,3 +6383,240 @@ useEffect(() => {
 
 
 ```
+
+## Publishing App to Production Locally 
+- ![alt text](image-67.png)
+- We need an Ingress into our application. 
+- This can be 'nginx' that can receive external traffic and forward it based on rules to the correct location. 
+- We will have a rule that will allow our client browsers to maintain connection to NotificationService. 
+- We will run the following command: 
+```shell 
+npm run build 
+```
+- We will also create a file .env.local to store our environment variables for any URLs we use 
+```shell 
+AUTH_SECRET="as19ZchDsmc3ZqU5oHq5or4uhtPZtE6sZyIEUYh+s3M="
+API_URL=http://localhost:6001/
+ID_URL=http://localhost:5000
+AUTH_URL=http://localhost:3000
+NOTIFY_URL=http://localhost:6001/notifications
+
+
+```
+- Then inside code we can use them like this:
+```js 
+ const baseUrl = process.env.API_URL;
+```
+- We can create a Dockerfile for our Next.js webapp as follows: 
+```shell 
+ FROM node:18-alpine AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+
+COPY frontend/web-app/package*.json ./
+RUN  npm install --omit-dev
+
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY frontend/web-app ./
+
+ENV NEXT_TELEMETRY_DISABLED 1
+
+RUN npm run build
+
+# production image, copy all files and run next
+FROM node:18-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV production
+
+ENV NEXT_TELEMETRY_DISABLED 1
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+#COPY --from=builder /app/public ./public
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/next.config.mjs ./next.config.mjs
+
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+
+ENV PORT 3000
+
+CMD ["node", "server.js"]
+
+
+```
+- Note that we are building our app as a standalone webapp. 
+- For this purpose we need to install a package sharp for this in our webapp. 
+- Then we can add it to our docker compose file as follows: 
+```shell 
+   web-app:
+    image: nishant198509/web-app
+    build:
+      context: .
+      dockerfile: frontend/web-app/Dockerfile
+    volumes:
+      - /var/lib/web/data
+    ports:
+      - 3000:3000
+    environment:
+      - AUTH_SECRET="as19ZchDsmc3ZqU5oHq5or4uhtPZtE6sZyIEUYh+s3M="
+      - API_URL=http://gateway-svc/
+      - ID_URL=http://localhost:5000
+      - ID_URL_INTERNAL=http://identity-svc
+      - AUTH_URL=http://localhost:3000
+      - AUTH_URL_INTERNAL:http://web-app:3000
+      - NOTIFY_URL=http://localhost:6001/notifications
+
+```
+
+## Fixing problems with identity server
+- When we first run the webapp in production mode in Docker and try to login by using the identity server it will not work. 
+- This is because our next js server running inside docker container will try to connect over localhost:5000 to our identity server to validate the issuer. 
+- If we specify the issuer to be http://identity-svc then also it will not work because in HostingExtensions.cs file our issuer is a hardcoded value which we have to move to appsettings.json 
+- Similarly in Config.cs file the callback url for next.js Client also need to be moved in appsettings.json 
+```c#
+//Changes in Config.cs file 
+new Client
+            {
+                ClientId = "nextApp",
+                ClientName = "nextApp",
+                ClientSecrets = { new Secret("secret".Sha256()) },
+                //ID Token and Access Token can be shared without any browser involvement
+                AllowedGrantTypes = GrantTypes.CodeAndClientCredentials,
+                //Pkce is required in case of mobile applications not for web applications
+                RequirePkce = false,
+                RedirectUris = {config["ClientApp"]+"/api/auth/callback/id-server"},
+                //Allows us to use Refresh Token Functionality
+                AllowOfflineAccess = true,
+                AllowedScopes = {"openid", "profile","auctionApp"},
+                AccessTokenLifetime = 3600*24*30,
+                AlwaysIncludeUserClaimsInIdToken = true
+            }
+
+//Changes in HostingExtensions.cs file 
+builder.Services
+            .AddIdentityServer(options =>
+            {
+                options.Events.RaiseErrorEvents = true;
+                options.Events.RaiseInformationEvents = true;
+                options.Events.RaiseFailureEvents = true;
+                options.Events.RaiseSuccessEvents = true;
+                options.IssuerUri = builder.Configuration["IssuerUri"];
+                // see https://docs.duendesoftware.com/identityserver/v6/fundamentals/resources/
+                //options.EmitStaticAudienceClaim = true;
+            })
+            .AddInMemoryIdentityResources(Config.IdentityResources)
+            .AddInMemoryApiScopes(Config.ApiScopes)
+            .AddInMemoryClients(Config.Clients(builder.Configuration))
+            .AddAspNetIdentity<ApplicationUser>()
+            .AddProfileService<CustomProfileService>();
+
+```
+- So we will need to configure 2 kinds of URLs: internal and external 
+- We will configure another environment variable ID_URL_INTERNAL which our Next.js server will have to connect to get the token for 'authorize' and 'userinfo' endpoints. 
+- We will make the following changes in auth.ts file in the Providers array for Duende Identity Server. 
+```js 
+ providers: [
+        DuendeIDS6Provider({
+            id:'id-server',
+            clientId: "nextApp",
+            clientSecret: "secret",
+            issuer: process.env.ID_URL,
+            authorization:{
+                params:{scope:'openid profile auctionApp'},
+                url: process.env.ID_URL + '/connect/authorize'
+            },
+            token:{
+                url: `${process.env.ID_URL_INTERNAL}/connect/token`,
+            },
+            userinfo: {
+                url: `${process.env.ID_URL_INTERNAL}/connect/token`,
+            },
+            idToken:true
+        } as OIDCConfig<Omit<Profile,'username'>>),
+    ],
+    callbacks:{
+        async redirect ({url,baseUrl}){
+            return url.startsWith(baseUrl) ? url : baseUrl
+        },
+
+
+```
+- Once we do the above changes our Next.js server will be able to connect to Identity Server. 
+
+## Adding an Nginx ingress controller. 
+- It is going to be a reverse proxy. 
+- Client browser will go to a URL and then its going to hit the nginx proxy.
+- It is the proxy's job to forward it to the appropriate service. 
+- We will add the nginx-proxy container to docker compose like this: 
+```shell 
+   nginx-proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+
+```
+- We will then add the following entry in hosts file 
+```shell 
+ 127.0.0.1 id.carsties.local app.carsties.local api.carsties.local
+
+```
+- We will then update the docker compose file for the identity svc, gateway svc and web-app to include Virtual host and port number like this: 
+```shell
+  web-app:
+    image: nishant198509/web-app
+    build:
+      context: .
+      dockerfile: frontend/web-app/Dockerfile
+    volumes:
+      - /var/lib/web/data
+#    ports:
+#      - 3000:3000
+    environment:
+      - AUTH_SECRET="as19ZchDsmc3ZqU5oHq5or4uhtPZtE6sZyIEUYh+s3M="
+      - API_URL=http://gateway-svc/
+      - ID_URL=http://id.carsties.local
+      - ID_URL_INTERNAL=http://identity-svc
+      - AUTH_URL=http://app.carsties.local
+      - AUTH_URL_INTERNAL:http://web-app:3000
+      - NOTIFY_URL=http://api.carsties.local/notifications
+      - VIRTUAL_HOST=app.carsties.local
+      - VIRTUAL_PORT=3000
+
+  gateway-svc:
+    image: nishant198509/gateway-svc:latest
+    build:
+      context: .
+      dockerfile: src/GatewayService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Docker
+      - ASPNETCORE_URLS=http://+:80
+      - ClientApp=http://app.carsties.local
+      - VIRTUAL_HOST=api.carsties.local
+
+  identity-svc:
+    image: nishant198509/identity-svc:latest
+    build:
+      context: .
+      dockerfile: src/IdentityService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Docker
+      - ASPNETCORE_URLS=http://+:80
+      - ClientApp=http://app.carsties.local
+      - IssuerUri=http://id.carsties.local
+      - ConnectionStrings__DefaultConnection=Server=postgres:5432;User Id=postgres;Password=postgrespw;Database=identity
+      - VIRTUAL_HOST=id.carsties.local
+
+```
+  

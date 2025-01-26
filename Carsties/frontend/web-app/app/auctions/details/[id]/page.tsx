@@ -1,4 +1,4 @@
-import {getBidsForAuction, getDetailedViewData} from "@/app/actions/auctionActions";
+import {getDetailedViewData} from "@/app/actions/auctionActions";
 import Heading from "@/app/components/Heading";
 import CountdownTimer from "@/app/auctions/CountdownTimer";
 import CarImage from "@/app/auctions/CarImage";
@@ -6,7 +6,6 @@ import DetailedSpecs from "@/app/auctions/details/[id]/DetailedSpecs";
 import {getCurrentUser} from "@/app/actions/authActions";
 import EditButton from "@/app/auctions/details/EditButton";
 import DeleteButton from "@/app/auctions/details/DeleteButton";
-import BidItem from "@/app/auctions/details/[id]/BidItem";
 import BidList from "@/app/auctions/details/[id]/BidList";
 
 
