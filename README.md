@@ -6619,4 +6619,92 @@ builder.Services
       - VIRTUAL_HOST=id.carsties.local
 
 ```
+
+## Adding SSL to the ingress controller 
+- SSL is supported using single host, wildcard and SAN certificates using naming conventions for certificates or optionally specifying a cert name as an environment variable.
+- To enable SSL use the following command: 
+```shell 
+docker run -d -p 80:80 -p 443:443 -v /path/to/certs:/etc/nginx/certs -v /var/run/docker.sock:/tmp/docker.sock:ro nginxproxy/nginx-proxy
+```
+- The contents of /path/to/certs should contain the certificates and private keys for any virtual hosts in use. The certificate and keys should be named after the virtual host with a .crt and .key extension. For example, a container with VIRTUAL_HOST=foo.bar.com should have a foo.bar.com.crt and foo.bar.com.key file in the certs directory.
+- mkcert is a simple tool for making locally-trusted development certificates. It requires no configuration.
+- mkcert automatically creates and installs a local CA in the system root store, and generates locally-trusted certificates.
+- use the following commands to install and use mkcert 
+```shell 
+# Install mkcert tool
+choco install mkcert 
+# Install local Certification Authority
+mkcert -install
+# Create a new folder devcert 
+mkdir devcert
+#Go into that folder
+cd devcert
+#Generate a new key file and crt file with the same name as the domain we will use i.e carsties.local to create a new certificate which is valid for app.carsties.local, api.carsties.local and id.carsties.local
+ mkcert -key-file carsties.local.key -cert-file carsties.local.crt app.carsties.local api.carsties.local id.carsties.local
+
+```
+- The above commands will generate carsties.local.crt and carsties.local.key in the devcert folder. 
+- Then we will update nginx configuration in the docker compose file and also update web-app, identity-svc and gateway-svc to use the secure https urls like this 
+
+```shell 
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      # Path of the folder where to find the certificates key and crt files
+      - ./devcert:/etc/nginx/certs
+
+  web-app:
+    image: nishant198509/web-app
+    build:
+      context: .
+      dockerfile: frontend/web-app/Dockerfile
+    volumes:
+      - /var/lib/web/data
+#    ports:
+#      - 3000:3000
+    environment:
+      - AUTH_SECRET="as19ZchDsmc3ZqU5oHq5or4uhtPZtE6sZyIEUYh+s3M="
+      - API_URL=http://gateway-svc/
+    # update to use https
+      - ID_URL=https://id.carsties.local
+      - ID_URL_INTERNAL=http://identity-svc
+      - AUTH_URL=https://app.carsties.local
+      - AUTH_URL_INTERNAL:http://web-app:3000
+      - NOTIFY_URL=https://api.carsties.local/notifications
+      - VIRTUAL_HOST=app.carsties.local
+      - VIRTUAL_PORT=3000
+
+  gateway-svc:
+    image: nishant198509/gateway-svc:latest
+    build:
+      context: .
+      dockerfile: src/GatewayService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Docker
+      - ASPNETCORE_URLS=http://+:80
+      - ClientApp=https://app.carsties.local
+      - VIRTUAL_HOST=api.carsties.local
+
+  identity-svc:
+    image: nishant198509/identity-svc:latest
+    build:
+      context: .
+      dockerfile: src/IdentityService/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Docker
+      - ASPNETCORE_URLS=http://+:80
+      - ClientApp=https://app.carsties.local
+      - IssuerUri=https://id.carsties.local
+      - ConnectionStrings__DefaultConnection=Server=postgres:5432;User Id=postgres;Password=postgrespw;Database=identity
+      - VIRTUAL_HOST=id.carsties.local
+
+```
+
+## Unit and Integration Testing
+
   
