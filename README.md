@@ -6706,5 +6706,813 @@ cd devcert
 ```
 
 ## Unit and Integration Testing
+- ![alt text](image-68.png)
+- Unit Tests are faster to write and are cheap 
+- Integration tests test more than one thing. 
+- We will test against a fake database. 
+- Tests provide us documentation against our code
+- They provide us loosely coupled code. 
+- A good test is Fast, Isolated, Repeatable, Self-Checking and Timely(takes less time to write)
+- We will use xUnit
+- ![alt text](image-69.png)
+- ![alt text](image-70.png)
+- ![alt text](image-71.png)
+- Stub doesnot have implementation but they can return a pre-programmed value. 
+- ![alt text](image-72.png)
+- We will add an xUnit test project to our solution: 
+```shell 
+dotnet new xunit -o tests/AuctionService.UnitTests
 
-  
+
+```
+- Next step is to add a Unit Test. We will name our unit tests in the following manner: 
+```c#
+namespace AuctionService.UnitTests;
+
+public class AuctionEntityTests
+{
+    [Fact]
+    public void Method_Scenario_ExpectedResult()
+    {
+
+    }
+}
+
+```
+- It is very difficult to mock AuctionDbContext in AuctionController. 
+- We need to create an IRepository and AuctionRepository to be able to test our AuctionsController.
+- It is easy to mock IMapper and IPublishEndpoint since they are interfaces, but AuctionDbContext is not an interface. 
+- So we will move the database related changes into IAuctionRepository and its implementation AuctionRepository. 
+- Then we can create Unit Tests cases for the AuctionController.cs file like this: 
+```c#
+ using AuctionService.Controllers;
+using AuctionService.Data;
+using AuctionService.DTOs;
+using AuctionService.Entities;
+using AuctionService.RequestHelpers;
+using AuctionService.UnitTests.Utils;
+using AutoFixture;
+using AutoMapper;
+using MassTransit;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Moq;
+
+namespace AuctionService.UnitTests;
+
+public class AuctionControllerTests
+{
+    private readonly Mock<IAuctionRepository> _auctionRepo;
+    private readonly Mock<IPublishEndpoint> _publishEndpoint;
+    private readonly Fixture _fixture;
+    private readonly AuctionsController _controller;
+    private readonly IMapper _mapper;
+    
+    //This code is executed for each unit test we run. 
+    public AuctionControllerTests()
+    {
+        _fixture = new Fixture();
+        _auctionRepo = new Mock<IAuctionRepository>();
+        _publishEndpoint = new Mock<IPublishEndpoint>();
+        var mockMapper = new MapperConfiguration(mc =>
+        {
+            mc.AddMaps(typeof(MappingProfiles).Assembly);
+        }).CreateMapper().ConfigurationProvider;
+        
+        _mapper = new Mapper(mockMapper);
+        _controller = new AuctionsController(_auctionRepo.Object, _mapper, _publishEndpoint.Object)
+        {
+            ControllerContext = new ControllerContext()
+            {
+                HttpContext = new DefaultHttpContext { User = Helpers.GetClaimsPrincipal() }
+            }
+        };
+    }
+
+    [Fact]
+    public async Task GetAuctions_WithNoParams_Returns10Auctions()
+    {
+        //arrange
+        //This method will create 10 Auction Dto objects and store them in auctions variable.
+        //Auto fixture is really useful to create fake objects
+        var auctions = _fixture.CreateMany<AuctionDto>(10).ToList();
+        _auctionRepo.Setup(repo=>repo.GetAuctionsAsync(It.IsAny<string>())).ReturnsAsync(auctions);
+        
+        //act
+        var result = await _controller.GetAllAuctions("12/20/2024");
+        
+        //Assert
+        Assert.Equal(10,result.Value.Count());
+        Assert.IsType<ActionResult<List<AuctionDto>>>(result);
+
+    }
+    
+    [Fact]
+    public async Task GetAuctionById_WithValidGuid_ReturnsAuction()
+    {
+        //arrange
+        //This method will create a fake auction Dto
+        //Auto fixture is really useful to create fake objects
+        var auction = _fixture.Create<AuctionDto>();
+        _auctionRepo.Setup(repo=>repo.GetAuctionByIdAsync(It.IsAny<Guid>())).ReturnsAsync(auction);
+        
+        //act
+        var result = await _controller.GetAuctionById(Guid.NewGuid());
+        
+        //Assert
+        Assert.Equal(auction.Make,result.Value.Make);
+        Assert.IsType<ActionResult<AuctionDto>>(result);
+
+    }
+    
+    [Fact]
+    public async Task GetAuctionById_WithInvalidGuid_ReturnsNotFound()
+    {
+        //arrange
+        //This method will create a fake auction Dto
+        //Auto fixture is really useful to create fake objects
+        _auctionRepo.Setup(repo=>repo.GetAuctionByIdAsync(It.IsAny<Guid>())).ReturnsAsync(value:null);
+        
+        //act
+        var result = await _controller.GetAuctionById(Guid.NewGuid());
+        
+        //Assert
+        Assert.IsType<NotFoundResult>(result.Result);
+
+    }
+    
+    [Fact]
+    public async Task CreateAuction_WithValidAuctionDto_ReturnsCreatedAtActionResult()
+    {
+        //arrange
+        //This method will create a fake auction Dto
+        //Auto fixture is really useful to create fake objects
+        var auction = _fixture.Create<CreateAuctionDto>();
+        _auctionRepo.Setup(repo => repo.AddAuction(It.IsAny<Auction>()));
+        _auctionRepo.Setup(repo => repo.SaveChangesAsync()).ReturnsAsync(true);
+        //act
+        var result = await _controller.CreateAuction(auction);
+        var createdResult = result.Result as CreatedAtActionResult;
+        //Assert
+        Assert.NotNull(createdResult);
+        Assert.Equal("GetAuctionById",createdResult.ActionName);
+        Assert.IsType<AuctionDto>(createdResult.Value);
+    }
+    
+    [Fact]
+    public async Task CreateAuction_FailedSave_Returns400BadRequest()
+    {
+        //arrange
+        //This method will create a fake auction Dto
+        //Auto fixture is really useful to create fake objects
+        var auction = _fixture.Create<CreateAuctionDto>();
+        _auctionRepo.Setup(repo => repo.AddAuction(It.IsAny<Auction>()));
+        _auctionRepo.Setup(repo => repo.SaveChangesAsync()).ReturnsAsync(false);
+        //act
+        var result = await _controller.CreateAuction(auction);
+        //Assert
+        Assert.IsType<BadRequestObjectResult>(result.Result);
+    }
+
+    [Fact]
+    public async Task UpdateAuction_WithUpdateAuctionDto_ReturnsOkResponse()
+    {
+        //arrange 
+        var auction = _fixture.Build<Auction>().Without(x => x.Item).Create();
+        auction.Item = _fixture.Build<Item>().Without(x=>x.Auction).Create();
+        auction.Seller = "test";
+        _auctionRepo.Setup(repo => repo.GetAuctionEntityById(It.IsAny<Guid>())).ReturnsAsync(auction);
+        _auctionRepo.Setup(repo => repo.AddAuction(It.IsAny<Auction>()));
+        _auctionRepo.Setup(repo => repo.SaveChangesAsync()).ReturnsAsync(true);
+        var updateAuctionDto = _fixture.Create<UpdateAuctionDto>();
+        //act
+        var result = await _controller.UpdateAuction(Guid.NewGuid(), updateAuctionDto);
+        //Assert
+        Assert.IsType<OkResult>(result);
+    }
+
+    [Fact]
+    public async Task UpdateAuction_WithInvalidUser_Returns403Forbid()
+    {
+        //arrange 
+        var auction = _fixture.Build<Auction>().Without(x => x.Item).Create();
+        auction.Item = _fixture.Build<Item>().Without(x=>x.Auction).Create();
+        auction.Seller = "test1";
+        _auctionRepo.Setup(repo => repo.GetAuctionEntityById(It.IsAny<Guid>())).ReturnsAsync(auction);
+        _auctionRepo.Setup(repo => repo.AddAuction(It.IsAny<Auction>()));
+        _auctionRepo.Setup(repo => repo.SaveChangesAsync()).ReturnsAsync(true);
+        var updateAuctionDto = _fixture.Create<UpdateAuctionDto>();
+        //act
+        var result = await _controller.UpdateAuction(Guid.NewGuid(), updateAuctionDto);
+        //Assert
+        Assert.IsType<ForbidResult>(result);
+    }
+
+    [Fact]
+    public async Task UpdateAuction_WithInvalidGuid_ReturnsNotFound()
+    {
+        //arrange 
+        var auction = _fixture.Build<Auction>().Without(x => x.Item).Create();
+        auction.Item = _fixture.Build<Item>().Without(x=>x.Auction).Create();
+        auction.Seller = "test";
+        _auctionRepo.Setup(repo => repo.GetAuctionEntityById(It.IsAny<Guid>())).ReturnsAsync(value:null);
+        _auctionRepo.Setup(repo => repo.AddAuction(It.IsAny<Auction>()));
+        _auctionRepo.Setup(repo => repo.SaveChangesAsync()).ReturnsAsync(true);
+        var updateAuctionDto = _fixture.Create<UpdateAuctionDto>();
+        //act
+        var result = await _controller.UpdateAuction(Guid.NewGuid(), updateAuctionDto);
+        //Assert
+        Assert.IsType<NotFoundResult>(result);
+    }
+
+    [Fact]
+    public async Task DeleteAuction_WithValidUser_ReturnsOkResponse()
+    {
+        //arrange 
+        var auction = _fixture.Build<Auction>().Without(x => x.Item).Create();
+        auction.Item = _fixture.Build<Item>().Without(x=>x.Auction).Create();
+        auction.Seller = "test";
+        _auctionRepo.Setup(repo => repo.GetAuctionEntityById(It.IsAny<Guid>())).ReturnsAsync(auction);
+        _auctionRepo.Setup(repo => repo.RemoveAuction(It.IsAny<Auction>()));
+        _auctionRepo.Setup(repo => repo.SaveChangesAsync()).ReturnsAsync(true);
+
+        //act
+        var result = await _controller.DeleteAuction(Guid.NewGuid());
+        //Assert
+        Assert.IsType<OkResult>(result);
+    }
+
+    [Fact]
+    public async Task DeleteAuction_WithInvalidGuid_Returns404Response()
+    {
+        //arrange 
+        var auction = _fixture.Build<Auction>().Without(x => x.Item).Create();
+        auction.Item = _fixture.Build<Item>().Without(x=>x.Auction).Create();
+        auction.Seller = "test";
+        _auctionRepo.Setup(repo => repo.GetAuctionEntityById(It.IsAny<Guid>())).ReturnsAsync(value:null);
+        _auctionRepo.Setup(repo => repo.RemoveAuction(It.IsAny<Auction>()));
+        _auctionRepo.Setup(repo => repo.SaveChangesAsync()).ReturnsAsync(true);
+
+        //act
+        var result = await _controller.DeleteAuction(auction.Id);
+        //Assert
+        Assert.IsType<NotFoundResult>(result);
+    }
+
+    [Fact]
+    public async Task DeleteAuction_WithInvalidUser_Returns403Response()
+    {
+        //arrange 
+        var auction = _fixture.Build<Auction>().Without(x => x.Item).Create();
+        auction.Item = _fixture.Build<Item>().Without(x=>x.Auction).Create();
+        auction.Seller = "test1";
+        _auctionRepo.Setup(repo => repo.GetAuctionEntityById(It.IsAny<Guid>())).ReturnsAsync(auction);
+        _auctionRepo.Setup(repo => repo.RemoveAuction(It.IsAny<Auction>()));
+        _auctionRepo.Setup(repo => repo.SaveChangesAsync()).ReturnsAsync(true);
+
+        //act
+        var result = await _controller.DeleteAuction(Guid.NewGuid());
+        //Assert
+        Assert.IsType<ForbidResult>(result);
+    }
+    
+    
+}
+
+```
+- We may also have to pass the claims principal into the HTTP Request like this. 
+- We will create a folder Utils with file Helpers.cs like this: 
+- This will pass the claims principal into our AuctionControllerTests constructor 
+```c#
+ using System.Security.Claims;
+
+namespace AuctionService.UnitTests.Utils;
+
+public class Helpers
+{
+    public static ClaimsPrincipal GetClaimsPrincipal()
+    {
+        var claims = new List<Claim>
+        {
+            new Claim("username", "test"),
+            new Claim(ClaimTypes.Name, "test"),
+        };
+        var identity = new ClaimsIdentity(claims, "testing");
+        return new ClaimsPrincipal(identity);
+    }
+}
+
+```
+- Pass it to the AuctionControllerTests constructor like this: 
+```c#
+  _controller = new AuctionsController(_auctionRepo.Object, _mapper, _publishEndpoint.Object)
+        {
+            ControllerContext = new ControllerContext()
+            {
+                HttpContext = new DefaultHttpContext { User = Helpers.GetClaimsPrincipal() }
+            }
+        };
+
+```
+
+## Integration Testing (TestContainers and Fake JwtBearer and Asp.Net Core WebApi)
+- We will create a new project for AuctionService.IntegrationTests 
+```shell
+dotnet new xunit -o tests/AuctionService.IntegrationTests
+dotnet sln add tests/AuctionService.IntegrationTests
+dotnet add reference ../../src/AuctionService
+
+```
+- We will add the following packages: 
+- Microsoft.AspNetCore.Mvc.Testing (For functional testing for our Asp.net core webapi project)
+- TestContainers.PostgresSql (For testing our postgresSql database without actually connecting to a real database)
+- WebMotions.Fake.Authentication.JwtBearer (For testing authentication with JwtBearer tokens without connecting to an actual identity server)
+
+- Then we will create a class CustomWebAppFactory that implements WebApplicationFactory of Microsoft.AspNetCore.Mvc.Testing and we will create a partial class for Program.cs like this 
+```c#
+public partial class Program {}
+```
+- Custom Web Application Factory is used to create a test instance of our WebApplication and we can add test services inside it like this: 
+```c#
+using Microsoft.AspNetCore.Mvc.Testing;
+
+namespace AuctionService.IntegrationTests.Fixtures;
+
+// Create a test instance of our WebApplication and we can add test services inside here
+public class CustomWebAppFactory : WebApplicationFactory<Program>
+{
+    
+}
+
+```
+- We now need to implement IAsyncLifeTime interface which is provided by xUnit which provides asynchronous lifetime functionality. 
+- We will override a method ConfigureWebHost().
+- When this CustomWebAppFactory runs, it basically executes everything inside Program.cs file of AuctionService. 
+- We need to then replace DbContext from Program.cs with the one from the Test Container. 
+- We also need to add a DbContext to use the DbContext of PostgresSqlContainer. 
+- Then we also need to replace the MassTransit initialized from Program.cs file to be replaced with MassTransitTestHarness. 
+- We also need to ensure our database is created inside our postgreSql test container. 
+- We will also need to create a DbHelper class that will initialize the database for us, but we will also need to method to reset the db after each test.
+- This is because each test will cause data to be in some kind of wrong state. So we need to reset it back. 
+- We will also need to implement a ServiceCollectionExtension class that will have methods to remove the DbContext and ensure the database is created. 
+- The methods inside this class are used inside the CustomWebAppFactory class. 
+```c#
+//DbHelper.cs 
+using AuctionService.Data;
+using AuctionService.Entities;
+
+namespace AuctionService.IntegrationTests.Util;
+
+public static class DbHelper
+{
+    public static void InitDbForTests(AuctionDbContext db)
+    {
+        db.Auctions.AddRange(GetAuctionsForTest());
+        db.SaveChanges();
+    }
+
+    public static void ReInitDbForTests(AuctionDbContext db)
+    {
+        //Remove all auctions from table
+        db.Auctions.RemoveRange(db.Auctions);
+        db.SaveChanges();
+        InitDbForTests(db);
+    }
+
+    private static List<Auction> GetAuctionsForTest()
+    {
+        return new List<Auction>
+        {
+            //auctions
+            // 1 Ford GT
+            new Auction
+            {
+                Id = Guid.Parse("afbee524-5972-4075-8800-7d1f9d7b0a0c"),
+                Status = Status.Live,
+                ReservePrice = 20000,
+                Seller = "bob",
+                AuctionEnd = DateTime.UtcNow.AddDays(10),
+                Item = new Item
+                {
+                    Make = "Ford",
+                    Model = "GT",
+                    Color = "White",
+                    Mileage = 50000,
+                    Year = 2020,
+                    ImageUrl = "https://cdn.pixabay.com/photo/2016/05/06/16/32/car-1376190_960_720.jpg"
+                }
+            },
+            // 2 Bugatti Veyron
+            new Auction
+            {
+                Id = Guid.Parse("c8c3ec17-01bf-49db-82aa-1ef80b833a9f"),
+                Status = Status.Live,
+                ReservePrice = 90000,
+                Seller = "alice",
+                AuctionEnd = DateTime.UtcNow.AddDays(60),
+                Item = new Item
+                {
+                    Make = "Bugatti",
+                    Model = "Veyron",
+                    Color = "Black",
+                    Mileage = 15035,
+                    Year = 2018,
+                    ImageUrl = "https://cdn.pixabay.com/photo/2012/05/29/00/43/car-49278_960_720.jpg"
+                }
+            },
+            // 3 Ford mustang
+            new Auction
+            {
+                Id = Guid.Parse("bbab4d5a-8565-48b1-9450-5ac2a5c4a654"),
+                Status = Status.Live,
+                Seller = "bob",
+                AuctionEnd = DateTime.UtcNow.AddDays(4),
+                Item = new Item
+                {
+                    Make = "Ford",
+                    Model = "Mustang",
+                    Color = "Black",
+                    Mileage = 65125,
+                    Year = 2023,
+                    ImageUrl = "https://cdn.pixabay.com/photo/2012/11/02/13/02/car-63930_960_720.jpg"
+                }
+            }
+        };
+    }
+}
+
+
+
+//Service Collection Extensions.cs 
+
+using AuctionService.Data;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace AuctionService.IntegrationTests.Util;
+
+public static class ServiceCollectionExtensions
+{
+    public static void RemoveDbContext<T>(this IServiceCollection services)
+    {
+        var descriptor = services.SingleOrDefault(d =>
+            d.ServiceType == typeof(DbContextOptions<AuctionDbContext>));
+        if(descriptor != null) services.Remove(descriptor);
+    }
+
+    public static void EnsureCreated<T>(this IServiceCollection services)
+    {
+        var sp = services.BuildServiceProvider();
+        using var scope = sp.CreateScope();
+        var scopedServices = scope.ServiceProvider;
+        var db = scopedServices.GetRequiredService<AuctionDbContext>();
+        db.Database.Migrate();
+            
+        DbHelper.InitDbForTests(db);
+    }
+}
+
+
+
+//CustomWebAppFactory.cs file 
+using AuctionService.Data;
+using AuctionService.IntegrationTests.Util;
+using MassTransit;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Testcontainers.PostgreSql;
+
+namespace AuctionService.IntegrationTests.Fixtures;
+
+// Create a test instance of our WebApplication and we can add test services inside here
+public class CustomWebAppFactory : WebApplicationFactory<Program>, IAsyncLifetime
+{
+    //provided by the TestContainer for PostgreSql
+    private PostgreSqlContainer _postgreSqlContainer = new PostgreSqlBuilder().Build();
+    public async Task InitializeAsync()
+    {
+        await _postgreSqlContainer.StartAsync();
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.ConfigureTestServices(services =>
+        {
+            //Replace DbContext from Program.cs of PostgresSql with the one from TestContainer
+           services.RemoveDbContext<AuctionDbContext>();
+
+            services.AddDbContext<AuctionDbContext>(options =>
+            {
+                options.UseNpgsql(_postgreSqlContainer.GetConnectionString());
+            });
+            
+            // Replace Mass Transit Configuration from Program.cs file and replace it with Test Harness
+            services.AddMassTransitTestHarness();
+            
+            //Build the database for AuctionDbContext inside our postgresSql Test Container
+            services.EnsureCreated<AuctionDbContext>();
+
+             //Add Fake Authentication Service to replace the AuthenticationService in Program.cs
+            services.AddAuthentication(FakeJwtBearerDefaults.AuthenticationScheme)
+                .AddFakeJwtBearer(opt =>
+                {
+                    opt.BearerValueType = FakeJwtBearerBearerValueType.Jwt;
+                });
+
+        });
+    }
+
+     Task IAsyncLifetime.DisposeAsync() => _postgreSqlContainer.DisposeAsync().AsTask();
+    
+}
+
+```
+## Creating Unit Tests for GET/POST/UPDATE
+- We can create such tests as follows: 
+- Please note for POST/PUT methods we are using FakeBearerToken and this works well with FakeJwtBearerDefaults Authentication Scheme we have specified in CustomWebAppFactory.cs file 
+```c#
+using System.Net;
+using System.Net.Http.Json;
+using AuctionService.Data;
+using AuctionService.DTOs;
+using AuctionService.IntegrationTests.Fixtures;
+using AuctionService.IntegrationTests.Util;
+using Microsoft.Extensions.DependencyInjection;
+using NuGet.Frameworks;
+
+namespace AuctionService.IntegrationTests;
+
+public class AuctionControllerTests : IClassFixture<CustomWebAppFactory>, IAsyncLifetime
+{
+    private readonly CustomWebAppFactory _factory;
+    private readonly HttpClient _httpClient;
+    private const string AuctionId = "afbee524-5972-4075-8800-7d1f9d7b0a0c";
+
+    public AuctionControllerTests(CustomWebAppFactory factory)
+    {
+        _factory = factory;
+        _httpClient = _factory.CreateClient();
+    }
+
+    [Fact]
+    public async Task GetAuctions_ShouldReturn3Auctions()
+    {
+        //arrange
+        
+        
+        //act
+        var response = await _httpClient.GetFromJsonAsync<List<AuctionDto>>("/api/auctions");
+        
+        //assert
+        Assert.Equal(3, response.Count);
+    }
+    
+    [Fact]
+    public async Task GetAuctionById_WithValidId_ShouldReturnAuction()
+    {
+        //arrange
+        
+        
+        //act
+        var response = await _httpClient.GetFromJsonAsync<AuctionDto>($"/api/auctions/{AuctionId}");
+        
+        //assert
+        Assert.Equal("GT", response.Model);
+    }
+    
+    [Fact]
+    public async Task GetAuctionById_WithInvalidId_ShouldReturn404()
+    {
+        //arrange
+        
+        
+        //act
+        var response = await _httpClient.GetAsync($"/api/auctions/{Guid.NewGuid()}");
+        
+        //assert
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+    
+    [Fact]
+    public async Task CreateAuction_WithNoAuth_ShouldReturn401()
+    {
+        //arrange
+        var auction = new CreateAuctionDto(){Make = "Test"};
+        
+        //act
+        var response = await _httpClient.PostAsJsonAsync($"/api/auctions", auction);
+        
+        //assert
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+    
+    [Fact]
+    public async Task CreateAuction_WithAuth_ShouldReturn201()
+    {
+        //arrange
+        var auction = GetAuctionForCreate();
+        _httpClient.SetFakeJwtBearerToken(AuthHelper.GetBearerForUser("bob"));
+        
+        //act
+        var response = await _httpClient.PostAsJsonAsync($"/api/auctions", auction);
+        
+        //assert
+        response.EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var createdAuction = await response.Content.ReadFromJsonAsync<AuctionDto>();
+        Assert.Equal("bob",createdAuction.Seller);
+    }
+    
+    [Fact]
+    public async Task CreateAuction_WithInvalidCreateAuctionDto_ShouldReturn400()
+    {
+        //arrange
+        var auction = GetAuctionForCreate();
+        auction.Make = null;
+        auction.Mileage = 0;
+        _httpClient.SetFakeJwtBearerToken(AuthHelper.GetBearerForUser("bob"));
+        
+        //act
+        var response = await _httpClient.PostAsJsonAsync($"/api/auctions", auction);
+        
+        //assert
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        
+    }
+
+    [Fact]
+    public async Task UpdateAuction_WithValidUpdateDtoAndUser_ShouldReturn200()
+    {
+        //arrange
+        var auction = GetAuctionForUpdate();
+        _httpClient.SetFakeJwtBearerToken(AuthHelper.GetBearerForUser("bob"));
+        
+        //act
+        var response = await _httpClient.PutAsJsonAsync($"/api/auctions/{AuctionId}", auction);
+        
+        //assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateAuction_WithValidUpdateDtoAndInvalidUser_ShouldReturn403()
+    {
+        var auction = GetAuctionForUpdate();
+        _httpClient.SetFakeJwtBearerToken(AuthHelper.GetBearerForUser("alice"));
+        
+        //act
+        var response = await _httpClient.PutAsJsonAsync($"/api/auctions/{AuctionId}", auction);
+        
+        //assert
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+    
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public Task DisposeAsync()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AuctionDbContext>();
+        DbHelper.ReInitDbForTests(db);
+        return Task.CompletedTask;
+    }
+
+    private CreateAuctionDto GetAuctionForCreate()
+    {
+        return new CreateAuctionDto
+        {
+            Make = "test",
+            Model = "testModel",
+            Color = "testColor",
+            ImageUrl = "testImageUrl",
+            Mileage = 10,
+            Year = 10,
+            ReservePrice = 10
+        };
+    }
+    
+    private UpdateAuctionDto GetAuctionForUpdate()
+    {
+        return new UpdateAuctionDto
+        {
+            Make = "Updated",
+            Model = "Updated",
+            Color = "Updated",
+            Mileage = 20,
+            Year = 20
+        };
+    }
+}
+
+```
+
+## Testing the Service Bus 
+- We can use the MassTransitTestHarness to test the events being published
+- We can make use of ITestHarness which can be instantiated to get the TestHarness from MassTransit and then we can check whether the event has been published using this TestHarness.
+```c#
+ using System.Net;
+using System.Net.Http.Json;
+using AuctionService.Data;
+using AuctionService.DTOs;
+using AuctionService.IntegrationTests.Fixtures;
+using AuctionService.IntegrationTests.Util;
+using Contracts;
+using MassTransit.Testing;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace AuctionService.IntegrationTests;
+
+//Each of our test classes uses an instance of our IClassFixture
+//This implies that we have 2 databases instantiated
+public class AuctionBusTests: IClassFixture<CustomWebAppFactory>, IAsyncLifetime
+{
+    private readonly CustomWebAppFactory _factory;
+    private readonly HttpClient _httpClient;
+    private ITestHarness _testHarness;
+
+    public AuctionBusTests(CustomWebAppFactory factory)
+    {
+        _factory = factory;
+        _httpClient = _factory.CreateClient();
+        _testHarness = factory.Services.GetTestHarness();
+    }
+
+    [Fact]
+    public async Task CreateAuction_WithValidObject_ShouldPublishAuctionCreatedEvent()
+    {
+        //arrange 
+        var auction = GetAuctionForCreate();
+        _httpClient.SetFakeJwtBearerToken(AuthHelper.GetBearerForUser("bob"));
+        
+        //act
+        var response = await _httpClient.PostAsJsonAsync("api/auctions", auction);
+        
+        //assert
+        response.EnsureSuccessStatusCode();
+        Assert.True(await _testHarness.Published.Any<AuctionCreated>());
+    }
+    
+    
+    
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public Task DisposeAsync()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AuctionDbContext>();
+        DbHelper.ReInitDbForTests(db);
+        return Task.CompletedTask;
+    }
+
+    private CreateAuctionDto GetAuctionForCreate()
+    {
+        return new CreateAuctionDto
+        {
+            Make = "test",
+            Model = "testModel",
+            Color = "testColor",
+            ImageUrl = "testImageUrl",
+            Mileage = 10,
+            Year = 10,
+            ReservePrice = 10
+        };
+    }
+}
+
+
+```
+
+## Using Collection Fixtures to share DB across test classes. 
+- Need to ensure our tests run as fast as possible. 
+- We should try and use the same database server for each test.
+- Since we now have 2 test classes: AuctionControllerTests and AuctionServiceBusTests
+- Both need access to database and both are going to startup a new database.
+- So we need to create a Shared Fixture. 
+- We can create it like this: 
+```c#
+ [CollectionDefinition("Shared Collection")]
+public class SharedFixture: ICollectionFixture<CustomWebAppFactory>
+{
+    
+}
+
+
+```
+- Now we will specify it in our Test Classes like this 
+```c#
+ [Collection("Shared Collection")]
+public class AuctionBusTests:  IAsyncLifetime
+{
+}
+
+[Collection("Shared Collection")]
+public class AuctionControllerTests : IAsyncLifetime
+{
+}
+
+```
+
+## Publishing our App to (local) Kubernetes
