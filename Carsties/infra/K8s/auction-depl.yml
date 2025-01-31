@@ -1,0 +1,43 @@
+﻿apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auction-svc
+spec:
+  selector:
+    matchLabels:
+      app: auction-svc
+  template:
+    metadata:
+      labels:
+        app: auction-svc
+    spec:
+      containers:
+        - name: auction-svc
+          image: nishant198509/auction-svc
+          imagePullPolicy: Never #To use local images and not pull them down from repository
+          envFrom:
+            - configMapRef:
+                name: auction-svc-config
+          ports:
+            - containerPort: 80
+              name: web
+            - containerPort: 7777
+              name: grpc  
+---
+# Create a ClusterIP for the auction service pod to make it available internally to other services
+apiVersion: v1
+kind: Service
+metadata:
+  name: auction-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: auction-svc
+  ports:
+    - port: 80
+      targetPort: 80
+      name: web
+    - port: 7777
+      targetPort: 7777
+      name: grpc
+      

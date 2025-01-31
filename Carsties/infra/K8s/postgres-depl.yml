@@ -1,0 +1,56 @@
+﻿apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres
+          env:
+            - name: POSTGRES_PASSWORD
+              value: postgrespw
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - mountPath: /var/data/postgres
+              name: postgresdata
+      volumes:
+        - name: postgresdata
+          persistentVolumeClaim:
+            claimName: postgres-claim
+---
+# Create a ClusterIP for the postgres pod to make it available internally to other services
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+
+# Create a service type of NodePort to expose this postgres pod to the outside world
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-np
+spec:
+  type: NodePort
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+      nodePort: 30001

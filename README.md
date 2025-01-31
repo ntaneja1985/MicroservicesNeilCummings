@@ -7516,3 +7516,565 @@ public class AuctionControllerTests : IAsyncLifetime
 ```
 
 ## Publishing our App to (local) Kubernetes
+- Enable Kubernetes in Docker Desktop 
+- ![alt text](image-73.png)
+- This K8s cluster will have a single node.
+- Node is just a virtual machine that is capable of running containers. 
+- Identity Service would not be part of this cluster and will live outside the cluster. 
+- Typically Identity Providers live outside the cluster of our application. 
+- We will take advantage of single sign on and keep this separate from the application that is consuming it.
+- ![alt text](image-74.png)
+- K8s eliminates many of the manual processes involved in deploying and scaling containerized applications. 
+- K8s helps us to cluster together group of hosts running Linux containers and K8s helps us to easily and efficiently manage those clusters. 
+- K8s is declarative. 
+- We just specify what is the state we want. 
+- It provides service discovery and load balancing. 
+- Allows for storage orchestration and allows us to mount a storage system of our choice. 
+- It also automates rollouts and rollbacks. 
+- It is self-healing
+- It also provides us with secret and config management 
+- ![alt text](image-75.png)
+- We have a master node to control these nodes. 
+- Node is a VM or physical machine that can run containerized applications. 
+- Smallest unit of deployment in K8s is a pod 
+- ![alt text](image-76.png)
+- Sometimes pods and container have a one to one relationship. 
+- Pods can have more than one container also . 
+- We can have services running inside our K8s as well. 
+- We will provide a cluster-ip to each of our services 
+- ![alt text](image-77.png)
+- In the above example Auction Service can find Search Service using its cluster IP name and thats how these services communicate internally. 
+- Externally we use a Load Balancer or NodePort to communicate to outside world. 
+- For K8s we need to provide manifest files. 
+- ![alt text](image-78.png)
+- We have apiVersion, kind, metadata, spec. 
+- We will use kubectl tool. 
+- Alternative to using K8s on Docker Desktop is to use minikube. 
+- Minikube doesnot use NodePort.
+- Kubernetes doesnot have depends on feature like docker compose. 
+- We need to use Polly instead in our code to wait for our postgres container to start or rabbitmq container to start. 
+- We need to handle exceptions in code and use retry policies. 
+- So for Auction Service and Search Service we will install Polly nuget package and handle it in a retry policy in Program.cs file like this: 
+- Similar sort of code will be implemented for IdentityService and Bidding Service. 
+```c#
+//Auction Service 
+var retryPolicy = Policy
+    .Handle<NpgsqlException>()
+    .WaitAndRetry(5,retryAttempt => TimeSpan.FromSeconds(10));
+
+retryPolicy.ExecuteAndCapture(() => DbInitializer.InitDb(app));
+
+//Search Service 
+app.Lifetime.ApplicationStarted.Register(async () =>
+{
+    await Policy.Handle<TimeoutException>()
+        .WaitAndRetryAsync(5, retryAttempt => TimeSpan.FromSeconds(10))
+        .ExecuteAndCaptureAsync(async () => await DbInitializer.InitDb(app));
+});
+
+
+```
+
+## Creating Deployment Manifests for K8s 
+- We will use kubectl tool 
+- ![alt text](image-79.png)
+- ![alt text](image-80.png)
+- First we will create a deployment for postgres sql database. 
+- We will also create a persistent volume claim for the same. 
+- A Persistent Volume Claim (PVC) in Kubernetes is a request for storage by a user. 
+- It's similar to a Pod in that it consumes storage resources
+- Persistent Volume (PV): A piece of storage in the cluster that has been provisioned by an administrator or dynamically provisioned using StorageClasses. It's a resource in the cluster, just like a node.
+- Persistent Volume Claim (PVC): A request for storage by a user. It specifies the size and access modes (e.g., ReadWriteOnce, ReadOnlyMany).
+- Imagine your applications have different storage needs and you want to ensure they have consistent and reliable access to storage across your Kubernetes cluster. That's where Persistent Volume Claims (PVCs) come in handy.
+- PVCs decouple the storage from the Pods, ensuring that the lifecycle of the storage is not tied to the lifecycle of the Pod. This means your data remains intact even if the Pod is deleted or restarted.
+- We can create a PVC like this: 
+```shell 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-claim
+spec:
+  resources:
+    requests:
+      storage: 200Mi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce #Volume can be read from or written to, from one node at one time.
+
+```
+- Then we can use this PVC inside our K8s deployment file like this 
+```shell 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres
+          env:
+            - name: POSTGRES_PASSWORD
+              value: postgrespw
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - mountPath: /var/data/postgres
+              name: postgresdata
+      volumes:
+        - name: postgresdata
+          persistentVolumeClaim:
+            claimName: postgres-claim
+
+```
+- We can apply these changes using Kubectl command like this: 
+```shell 
+kubectl apply -f postgres-depl.yml
+
+```
+
+## Adding a NodePort
+- In Kubernetes, a NodePort is a type of Service that exposes your application to the external world, making it accessible outside the Kubernetes cluster.
+- How NodePort Works
+- NodePort Service: This service opens a specific port on all the nodes in your cluster and forwards traffic to the appropriate Pod based on the defined selector. The port range is usually between 30000 and 32767.
+- ClusterIP: Behind the scenes, a NodePort service still uses a ClusterIP service, which is the default type of service that exposes the service on an internal IP in the cluster.
+- External Access: By using NodePort, you can access your application from outside the cluster using the node's IP address and the specific port.
+- We can create one for our postgres container like this: 
+- This is type of NodePort Service. 
+```shell 
+ ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-np
+spec:
+  type: NodePort
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+      nodePort: 30001
+
+```
+## Adding a ClusterIP Address 
+- In Kubernetes, ClusterIP is the default type of service that provides internal access to your application within the cluster.
+- Internal Communication: ClusterIP assigns an internal IP address to the service, making it accessible only within the Kubernetes cluster.
+- Service Discovery: Other services and Pods in the cluster can use this internal IP address to communicate with the service.
+- Default Service Type: When you create a service without specifying a type, it defaults to ClusterIP.
+- Internal Networking: Facilitates communication between different services and Pods within the cluster.
+- Service Discovery: Simplifies the discovery of services by providing a stable internal IP address and DNS name.
+- Security: Limits exposure to the external network, reducing potential attack vectors.
+- Microservices Architecture: Ideal for internal communication between microservices.
+- Private Applications: For applications that don't need to be exposed outside the cluster.
+- Testing and Development: Useful for testing and development environments where external access isn't required.
+- Equivalent for this in docker compose is using the name like auction.svc, gateway-svc, search-svc 
+- ![alt text](image-81.png)
+- Sample clusterIp is like this: 
+```shell 
+ # Create a ClusterIP for the postgres pod to make it available internally to other services
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+```
+## Adding a deployment for rabbitMq 
+- We will add a PVC for rabbitmq like this 
+```shell 
+ ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbit-claim
+spec:
+  resources:
+    requests:
+      storage: 200Mi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce #Volume can be read from or written to, from one node at one time.
+
+```
+- Then we will create a deployment for rabbitmq like this 
+```shell 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+spec:
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3-management
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: rabbit
+            - name: RABBITMQ_DEFAULT_PASS
+              value: rabbitpw
+          ports:
+            - containerPort: 15672
+              name: rbmq-mgmt-port
+            - containerPort: 5672
+              name: rbmq-msg-port
+          volumeMounts:
+            - mountPath: /var/lib/rabbitmq
+              name: rabbitdata
+      volumes:
+        - name: rabbitdata
+          persistentVolumeClaim:
+            claimName: rabbit-claim
+---
+# Create a ClusterIP for the rabbitmq pod to make it available internally to other services
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbit-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: rabbitmq
+  ports:
+    - port: 5672
+      targetPort: 5672
+---
+
+# Create a service type of NodePort to expose this rabbitmq pod to the outside world
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbit-np
+spec:
+  type: NodePort
+  selector:
+    app: rabbitmq
+  ports:
+    - port: 15672
+      targetPort: 15672
+      nodePort: 30002
+
+```
+
+## Creating a MongoDb Deployment 
+- We will first create a PVC for this 
+```shell 
+ apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-claim
+spec:
+  resources:
+    requests:
+      storage: 200Mi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce 
+```
+- Then we will create a deployment for mongodb as follows: 
+```shell 
+ apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+spec:
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: root
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              value: mongopw
+          ports:
+            - containerPort: 27017
+          volumeMounts:
+            - mountPath: /data/db
+              name: mongodata
+      volumes:
+        - name: mongodata
+          persistentVolumeClaim:
+            claimName: mongo-claim
+---
+# Create a ClusterIP for the rabbitmq pod to make it available internally to other services
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: mongo
+  ports:
+    - port: 27017
+      targetPort: 27017
+---
+
+# Create a service type of NodePort to expose this rabbitmq pod to the outside world
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-np
+spec:
+  type: NodePort
+  selector:
+    app: mongo
+  ports:
+    - port: 27017
+      targetPort: 27017
+      nodePort: 30003
+
+```
+
+## Auction Service Deployment 
+- If we remember during docker compose this had a lot of environment variables. 
+- It would be noisy to include those environment variables within the same auction svc deployment file. 
+- So we can can create a configMap file like this 
+```shell
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auction-svc-config
+data:
+  ASPNETCORE_URLS: http://+:80;http://+:7777
+  RabbitMq__Host: rabbit-clusterip
+  RabbitMq__Username: rabbit
+  RabbitMq__Password: rabbitpw
+  ConnectionStrings__DefaultConnection: Server=postgres-clusterip:5432;User Id=postgres;Password=postgrespw;Database=auctions
+  IdentityServiceUrl: http://identity-svc
+  Kestrel__Endpoints__Grpc__Protocols: Http2
+  Kestrel__Endpoints__Grpc__Url: http://+:7777
+  Kestrel__Endpoints__WebApi__Protocols: Http1
+  Kestrel__Endpoints__WebApi__Url: http://+:80
+```
+
+- Then we can create our auction-svc deployment file and use it inside it by using its name: auction-svc-config. 
+```shell 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auction-svc
+spec:
+  selector:
+    matchLabels:
+      app: auction-svc
+  template:
+    metadata:
+      labels:
+        app: auction-svc
+    spec:
+      containers:
+        - name: auction-svc
+          image: nishant198509/auction-svc
+          imagePullPolicy: Never #To use local images and not pull them down from repository
+          envFrom:
+            - configMapRef:
+                name: auction-svc-config
+          ports:
+            - containerPort: 80
+              name: web
+            - containerPort: 7777
+              name: grpc  
+---
+# Create a ClusterIP for the auction service pod to make it available internally to other services
+apiVersion: v1
+kind: Service
+metadata:
+  name: auction-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: auction-svc
+  ports:
+    - port: 80
+      targetPort: 80
+      name: web
+    - port: 7777
+      targetPort: 7777
+      name: grpc
+      
+
+```
+- If we make changes to the config file and just need to restart our pod we can do it using this kubectl command: 
+```shell 
+ kubectl rollout restart deployment auction-svc  
+
+```
+- Please note that since we are deploying them inside our local K8s cluster running in docker, our images are already available. 
+- In Production, we would have to pull them from a container repository like Azure Container Repository. 
+
+
+## Creating the Search Service Deployment 
+- We will create a configmap for this first:
+```shell
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: search-svc-config
+data:
+  ASPNETCORE_URLS: http://+:80
+  RabbitMq__Host: rabbit-clusterip
+  RabbitMq__Username: rabbit
+  RabbitMq__Password: rabbitpw
+  ConnectionStrings__MongoDbConnection: mongodb://root:mongopw@mongo-clusterip
+  AuctionServiceUrl: http://auction-clusterip
+
+```
+- We will now create search svc deployment file like this 
+```shell 
+ apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-svc
+spec:
+  selector:
+    matchLabels:
+      app: search-svc
+  template:
+    metadata:
+      labels:
+        app: search-svc
+    spec:
+      containers:
+        - name: search-svc
+          image: nishant198509/search-svc
+          imagePullPolicy: Never #To use local images and not pull them down from repository
+          envFrom:
+            - configMapRef:
+                name: search-svc-config
+          ports:
+            - containerPort: 80
+---
+# Create a ClusterIP for the auction service pod to make it available internally to other services
+apiVersion: v1
+kind: Service
+metadata:
+  name: search-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: search-svc
+  ports:
+    - port: 80
+      targetPort: 80
+      
+
+```
+- Similar to the above format we will add configs and then individual deployment files for bid service, notify service, gateway service, identity service and the webapp. 
+
+
+## Adding an ingress controller for K8s
+- There are multiple ways to install the Ingress-Nginx Controller:
+- with Helm, using the project repository chart;
+- with kubectl apply, using YAML manifests;
+- with specific addons (e.g. for minikube or MicroK8s).
+- On most Kubernetes clusters, the ingress controller will work without requiring any extra configuration.
+- Use this command to install nginx controller in k8s 
+```shell 
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/cloud/deploy.yaml
+```
+- We will copy paste the code from the above link into its ingress-depl yaml file 
+- We will create another ingress-svc yaml file and we will specify the rules for forwarding the traffic from the outside world within the cluster.
+- That file will look like this: 
+```shell 
+ # https://kubernetes.io/docs/concepts/services-networking/ingress/#the-ingress-resource
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-svc
+  labels:
+    name: ingress-svc
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - app.carsties.local
+        - api.carsties.local
+        - id.carsties.local
+      secretName: carsties-app-tls
+  rules:
+  - host: app.carsties.local
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: webapp-clusterip
+            port:
+              number: 3000
+  - host: api.carsties.local
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: gateway-clusterip
+            port:
+              number: 80
+  - host: id.carsties.local
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: identity-clusterip
+            port:
+              number: 80
+
+```
+- Next step is to add SSL support to our application.
+- So we will make use of MkCert tool to generate our key and certificate inside the devcerts folder like this 
+```shell 
+ mkcert -key-file server.key -cert-file server.crt app.carsties.local api.carsties.local id.carsties.local
+
+```
+- ![alt text](image-82.png)
+- Next we will have to create a kubernetes secret to store this key and certificate like this 
+```shell
+  kubectl create secret tls carsties-app-tls --key server.key --cert server.crt
+
+```
+- Then we will use it in our ingress-svc yaml file to provide HTTPs support in our application 
+```shell 
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - app.carsties.local
+        - api.carsties.local
+        - id.carsties.local
+      secretName: carsties-app-tls
+
+```
+- Then we can run our application.
