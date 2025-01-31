@@ -8003,7 +8003,7 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/cont
 - We will copy paste the code from the above link into its ingress-depl yaml file 
 - We will create another ingress-svc yaml file and we will specify the rules for forwarding the traffic from the outside world within the cluster.
 - That file will look like this: 
-```shell 
+```yaml 
  # https://kubernetes.io/docs/concepts/services-networking/ingress/#the-ingress-resource
 
 apiVersion: networking.k8s.io/v1
