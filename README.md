@@ -7588,7 +7588,7 @@ app.Lifetime.ApplicationStarted.Register(async () =>
 - Imagine your applications have different storage needs and you want to ensure they have consistent and reliable access to storage across your Kubernetes cluster. That's where Persistent Volume Claims (PVCs) come in handy.
 - PVCs decouple the storage from the Pods, ensuring that the lifecycle of the storage is not tied to the lifecycle of the Pod. This means your data remains intact even if the Pod is deleted or restarted.
 - We can create a PVC like this: 
-```shell 
+```yaml 
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -7603,7 +7603,7 @@ spec:
 
 ```
 - Then we can use this PVC inside our K8s deployment file like this 
-```shell 
+```yaml 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7648,7 +7648,7 @@ kubectl apply -f postgres-depl.yml
 - External Access: By using NodePort, you can access your application from outside the cluster using the node's IP address and the specific port.
 - We can create one for our postgres container like this: 
 - This is type of NodePort Service. 
-```shell 
+```yaml 
  ---
 apiVersion: v1
 kind: Service
@@ -7678,7 +7678,7 @@ spec:
 - Equivalent for this in docker compose is using the name like auction.svc, gateway-svc, search-svc 
 - ![alt text](image-81.png)
 - Sample clusterIp is like this: 
-```shell 
+```yaml 
  # Create a ClusterIP for the postgres pod to make it available internally to other services
 apiVersion: v1
 kind: Service
@@ -7710,7 +7710,7 @@ spec:
 
 ```
 - Then we will create a deployment for rabbitmq like this 
-```shell 
+```yaml 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7777,7 +7777,7 @@ spec:
 
 ## Creating a MongoDb Deployment 
 - We will first create a PVC for this 
-```shell 
+```yaml 
  apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -7791,7 +7791,7 @@ spec:
     - ReadWriteOnce 
 ```
 - Then we will create a deployment for mongodb as follows: 
-```shell 
+```yaml 
  apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7857,7 +7857,7 @@ spec:
 - If we remember during docker compose this had a lot of environment variables. 
 - It would be noisy to include those environment variables within the same auction svc deployment file. 
 - So we can can create a configMap file like this 
-```shell
+```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7876,7 +7876,7 @@ data:
 ```
 
 - Then we can create our auction-svc deployment file and use it inside it by using its name: auction-svc-config. 
-```shell 
+```yaml 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7933,7 +7933,7 @@ spec:
 
 ## Creating the Search Service Deployment 
 - We will create a configmap for this first:
-```shell
+```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7948,7 +7948,7 @@ data:
 
 ```
 - We will now create search svc deployment file like this 
-```shell 
+```yaml 
  apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8066,7 +8066,7 @@ spec:
 
 ```
 - Then we will use it in our ingress-svc yaml file to provide HTTPs support in our application 
-```shell 
+```yaml 
 spec:
   ingressClassName: nginx
   tls:
@@ -8078,3 +8078,8 @@ spec:
 
 ```
 - Then we can run our application.
+
+## Publishing to Kubernetes(Internet)
+- Deployment to hosted Kubernetes Cluster. 
+- Continuous integration using Github Actions
+- Creating Kubernetes Cluster on Digital Ocean/Azure Kubernetes Service or Amazon Elastic Kubernetes Service
