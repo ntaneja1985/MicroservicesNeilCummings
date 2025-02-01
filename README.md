@@ -8083,3 +8083,245 @@ spec:
 - Deployment to hosted Kubernetes Cluster. 
 - Continuous integration using Github Actions
 - Creating Kubernetes Cluster on Digital Ocean/Azure Kubernetes Service or Amazon Elastic Kubernetes Service
+
+### Kubernetes Secrets 
+- In Kubernetes, Secrets are used to securely store and manage sensitive information such as passwords, tokens, and keys
+- Kubernetes Secrets help you manage sensitive data without exposing it directly in your application code or configuration files. Secrets are base64-encoded, and they can be referenced by Pods, ensuring that sensitive information is securely passed to your applications.
+- We can create secrets through YAML or command line like this 
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-secret
+type: Opaque
+data:
+  username: c3RhY2tvdmVyZmxvdyE= # base64-encoded value of 'stackoverflow!'
+  password: c2VjcmV0cGFzcw==       # base64-encoded value of 'secretpass'
+
+
+```
+- To apply this secret we can use this command: 
+```shell
+kubectl apply -f my-secret.yaml
+```
+- We can also create secrets through command line like this: 
+```shell
+kubectl create secret generic my-secret --from-literal=username=stackoverflow! --from-literal=password=secretpass
+
+```
+
+- We can can access Secrets in a Pod by mounting them as a volume or by using environment variables.
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  containers:
+    - name: my-container
+      image: nginx
+      volumeMounts:
+        - name: my-secret-volume
+          mountPath: "/etc/my-secret"
+          readOnly: true
+  volumes:
+    - name: my-secret-volume
+      secret:
+        secretName: my-secret
+
+```
+- In this example, the Secret will be mounted at /etc/my-secret in the container.
+- Using Environment variables: 
+```yaml 
+ apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  containers:
+    - name: my-container
+      image: nginx
+      env:
+        - name: USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: my-secret
+              key: username
+        - name: PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: my-secret
+              key: password
+
+
+```
+- In this example, the Secret's values will be set as environment variables USERNAME and PASSWORD in the container.
+- Avoid Committing Secrets: Never commit Secrets to version control. Use tools like kubeseal or sealed-secrets for managing Secrets securely.
+- Consider integrating Kubernetes with external secret management tools like HashiCorp Vault, AWS Secrets Manager, or Azure Key Vault for enhanced security and management.
+- For Auction Service and for storing PostGres passwords and connections strings we can create a secret yaml file like this: 
+```yaml 
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+type: Opaque
+stringData:
+  password: postgresSecretPw
+  # Example:
+  # password: {{ .Values.password | b64enc }}
+  
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: auction-secret
+type: Opaque
+stringData:
+  connString: Server=postgres-clusterip:5432;User Id=postgres;Password=postgresSecretPw;Database=auctions
+```
+
+- Then we can use them in our postgres and auction-svc deployment files 
+
+```yaml 
+    spec:
+      containers:
+        - name: postgres
+          image: postgres
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name:  postgres-secret
+                  key: password
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - mountPath: /var/data/postgres
+              name: postgresdata
+
+--- 
+# auction-svc yaml file 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auction-svc
+spec:
+  selector:
+    matchLabels:
+      app: auction-svc
+  template:
+    metadata:
+      labels:
+        app: auction-svc
+    spec:
+      containers:
+        - name: auction-svc
+          image: nishant198509/auction-svc
+          imagePullPolicy: Never #To use local images and not pull them down from repository
+          env:
+            - name: ConnectionStrings__DefaultConnection
+              valueFrom:
+                secretKeyRef:
+                  name: auction-secret
+                  key: connString
+          envFrom:
+            - configMapRef:
+                name: auction-svc-config
+          ports:
+            - containerPort: 80
+              name: web
+            - containerPort: 7777
+              name: grpc  
+
+```
+- Similar to this we will create secrets for Mongo Db username password, search service connection strings, auth secrets for our web app. 
+  
+
+## Using Github Actions
+- Earlier we has set our imagePullPolicy to never because we were building our images locally. 
+- Now we need to store our docker images on a repository like ACR or DockerRepository.
+- We will create a Github Action so that when we push something to our code, it will automatically build our image and deploy it to Docker Repository.
+- GitHub Actions is a powerful CI/CD (Continuous Integration/Continuous Deployment) platform integrated directly into GitHub. It allows you to automate your software development workflows right within your repository
+- You can create workflows that build, test, and deploy your code. Workflows are defined using YAML files and can be triggered by various GitHub events, such as pushing code, creating pull requests, or opening issues
+- Workflows consist of one or more jobs, which are sets of steps that run in a specific order. Each job runs in its own virtual environment, either provided by GitHub or hosted by you
+- GitHub Actions has a marketplace with thousands of pre-built actions that you can use to simplify your workflows. You can also create your own custom actions if you need something specific
+- You have the option to use GitHub-hosted runners or set up your own self-hosted runners, giving you more control over the environment where your workflows run.
+- Here's a simple example of a workflow that runs tests on every push to the repository:
+```yaml
+ name: CI
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '14'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
+
+
+```
+- Streamlined Development: Automate repetitive tasks, reducing manual effort and minimizing human error.
+- Consistency: Ensure consistent builds and tests across different environments.
+- When we check into Github, we can access Github Actions under Actions Menu
+- One of the actions to is to build a Docker Image
+- We will use a strategy that whenever we push our code to main branch, Github action will be triggered and it will build and deploy our image to docker hub.
+- For this we first need to go to Repository Settings/Secrets and create 2 new secrets
+- One for the Docker_Username and other for Docker_token(which we can get from docker hub under Account settings)
+- We will then create a folder .github/workflows in root of our application folder(in this case Carsties) and then define a deploy.yml file as follows: 
+```yaml 
+ name: Build and publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  # pull_request:
+  #   branches: [ "main" ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - name: 'nishant198509/auction-svc'
+            path: 'src/AuctionService'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Login to Docker
+        uses: docker/login-action@v3
+        with:
+          username: ${{secrets.DOCKER_USERNAME}}
+          password: ${{secrets.DOCKER_TOKEN}}
+
+      - name: Build and push docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{matrix.service.path}}/Dockerfile
+          push: true
+          tags: ${{matrix.service.name}}:latest
+
+```
+- Now when we push our code to Docker, it will deploy the Auction Service image to Docker Hub

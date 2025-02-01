@@ -15,6 +15,12 @@ spec:
         - name: auction-svc
           image: nishant198509/auction-svc
           imagePullPolicy: Never #To use local images and not pull them down from repository
+          env:
+            - name: ConnectionStrings__DefaultConnection
+              valueFrom:
+                secretKeyRef:
+                  name: auction-secret
+                  key: connString
           envFrom:
             - configMapRef:
                 name: auction-svc-config
