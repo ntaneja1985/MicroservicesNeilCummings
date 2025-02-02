@@ -8325,3 +8325,536 @@ jobs:
 
 ```
 - Now when we push our code to Docker, it will deploy the Auction Service image to Docker Hub
+- ![alt text](image-83.png)
+  
+### Building multi-platform docker images
+- Building a multi-platform Docker image allows you to create a single image that can run on different operating systems and CPU architectures, such as linux/amd64, linux/arm64, and windows/amd64
+- 1. Set Up Docker Buildx
+Docker Buildx is an extended build feature that enables building multi-platform images. First, you need to set up Docker Buildx:
+```shell
+docker buildx create --name mybuilder --driver docker-container
+docker buildx inspect --bootstrap
+
+```
+- 2. Create Dockerfiles for Each Platform
+You'll need separate Dockerfiles for each platform you want to support. For example, create Dockerfile.amd64 and Dockerfile.arm64:
+```yaml
+# Dockerfile.amd64
+FROM ubuntu:20.04
+RUN apt-get update && apt-get install -y curl
+COPY app /app
+WORKDIR /app
+CMD ["./app"]
+
+# Dockerfile.arm64
+FROM ubuntu:20.04
+RUN apt-get update && apt-get install -y curl
+COPY app /app
+WORKDIR /app
+CMD ["./app"]
+
+
+
+```
+- 3. Build the Multi-Platform Image
+```shell
+docker buildx build --platform linux/amd64,linux/arm64 -t myimage:latest --push .
+
+```
+- 4. Tag and push the image
+```shell
+ docker tag myimage:latest myimage:amd64
+docker tag myimage:latest myimage:arm64
+docker push myimage:latest
+
+```
+- 5. Create a Manifest List
+Create a manifest list that references the different platform-specific images
+```shell
+docker manifest create myimage:latest myimage:amd64 myimage:arm64
+docker manifest push myimage:latest
+
+```
+- 6. Verify the Image
+Verify that the multi-platform image works correctly by pulling and running it on different platforms
+```shell
+ docker pull myimage:latest
+docker run myimage:latest
+
+```
+## Updating the github workflow for all of our services
+- We will use the matrix way to get the paths of all of our services
+- ![alt text](image-84.png)
+- Now we will deploy all of our images to docker hub.
+
+
+## Making our Github Actions efficient
+- Now what happens is that when we push our code to main, we are rebuilding all of our images even if no code changes have been made for them. 
+- This is not very efficient. 
+- We should only build our images only if their code has changed.
+- We will first add an environment variable in our deploy.yml file like this 
+  
+```yaml
+ jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    env:
+      continue: 'false'
+    strategy:
+      matrix:
+        service:
+          - name: 'nishant198509/auction-svc'
+            path: 'src/AuctionService'
+  ```
+
+- Now we will add another step to our workflow like this
+```yaml
+ steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with: 
+          fetch-depth: 2
+
+      - name: Check for changes in service path
+        run: | 
+         if git diff --quiet HEAD^ HEAD -- ${{matrix.service.path}}; then
+           echo: "No changes in ${{matrix.service.path}}. Skipping build"
+           echo: "continue=false" >> $GITHUB_ENV
+         else
+          echo "Changes detected in ${{matrix.service.path}}. Proceeding with build"
+          echo: "continue=true" >> $GITHUB_ENV
+         fi
+
+```
+- We will add a check for this environment variable "continue" in all of our steps like this 
+```yaml
+ - name: Set up Docker buildx
+        if: env.continue=='true'
+        uses: docker/setup-buildx-action@v2
+      ś
+ - name: Login to Docker
+        if: env.continue=='true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{secrets.DOCKER_USERNAME}}
+          password: ${{secrets.DOCKER_TOKEN}}
+
+```
+
+### Creating a Kubernetes Cluster
+- Our K8s cluster should be able to pull our images from Dockerhub and deploy them
+- We will create a K8s cluster. 
+- We need to select our cluster capacity. These are the machines which will run our K8s cluster. 
+- Initially we can select 2 nodes and choose a node plan with 4GB RAM, 2vCPUs and 80GB storage. 
+- In Digital Ocean we use doctl tool to install kubernetes cluster. 
+- A kubeconfig file is a YAML file used by Kubernetes to configure access to clusters. It contains information about clusters, users, and authentication mechanisms2. Here's a breakdown of its key components:
+- Clusters: Information about the Kubernetes clusters, including the server address and the certificate authority data
+- Users: Details about the users or service accounts that can access the clusters
+- Contexts: Grouping of cluster, user, and namespace information under a convenient name. Contexts allow you to switch between different clusters and namespaces easily.
+- A sample kubeconfig file is as follows: 
+```yaml
+ apiVersion: v1
+kind: Config
+preferences: {}
+clusters:
+  - name: my-cluster
+    cluster:
+      certificate-authority-data: <base64-encoded-ca-data>
+      server: https://my-cluster-api-server
+contexts:
+  - name: my-context
+    context:
+      cluster: my-cluster
+      user: my-user
+      namespace: my-namespace
+current-context: my-context
+users:
+  - name: my-user
+    user:
+      token: <base64-encoded-token>
+
+```
+- To configure a GitHub Action to connect to Azure Kubernetes Service (AKS), you'll need to set up a workflow that builds, tests, and deploys your application to AKS
+- We will need to store your Azure credentials as secrets in your GitHub repository. Go to your repository's settings, navigate to Secrets and variables, and add the following secrets:
+- AZURE_CREDENTIALS: Your Azure credentials in JSON format.
+- AZURE_CONTAINER_REGISTRY: The name of your container registry.
+- RESOURCE_GROUP: The name of the resource group containing your AKS cluster.
+- CLUSTER_NAME: The name of your AKS cluster
+- We can create a Github workflow will the following details: 
+- The azure/login action logs into Azure using the credentials stored in your GitHub secrets.
+- The az aks get-credentials command retrieves the kubeconfig file and sets the Kubernetes context, allowing the workflow to communicate with your AKS cluster.
+- Here our Github action runs 2 jobs: build and push and apply-k8s 
+- First we build and push our images to docker hub or Azure Container Registry
+- Then we can apply the k8s configuration.
+```yaml
+ name: Build and publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  # pull_request:
+  #   branches: [ "main" ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    env:
+      continue: 'false'
+    strategy:
+      matrix:
+        service:
+          - name: 'nishant198509/auction-svc'
+            path: 'src/AuctionService'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with: 
+          fetch-depth: 2
+
+      - name: Check for changes in service path
+        run: | 
+         if git diff --quiet HEAD^ HEAD -- ${{matrix.service.path}}; then
+           echo: "No changes in ${{matrix.service.path}}. Skipping build"
+           echo: "continue=false" >> $GITHUB_ENV
+         else
+          echo "Changes detected in ${{matrix.service.path}}. Proceeding with build"
+          echo: "continue=true" >> $GITHUB_ENV
+         fi
+      
+      - name: Set up Docker buildx
+        if: env.continue=='true'
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Login to Docker
+        if: env.continue=='true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{secrets.DOCKER_USERNAME}}
+          password: ${{secrets.DOCKER_TOKEN}}
+
+      - name: Build and push docker image
+        if: env.continue=='true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{matrix.service.path}}/Dockerfile
+          push: true
+          tags: ${{matrix.service.name}}:latest
+  
+  # Once we have built and pushed our images, we are going to initiate to apply the k8s configuration inside our Azure Kubernetes Cluster.
+  apply-k8s:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v1
+      
+      
+      - name: Login to ACR
+        uses: azure/docker-login@v1
+        with:
+            registry: ${{ env.AZURE_CONTAINER_REGISTRY }}
+            username: ${{ secrets.AZURE_CREDENTIALS }}
+            password: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Build and push Docker image
+        run: |
+            docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/$PROJECT_NAME:$GITHUB_SHA .
+            docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/$PROJECT_NAME:$GITHUB_SHA
+
+      - name: Azure CLI Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set up Kubernetes context
+        run: |
+          az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }} --file ./kubeconfig
+        env:
+          KUBECONFIG: ./kubeconfig
+      
+      # Alternatively we can apply our K8s deployments like this
+      - name: Apply the K8s deployments
+        run: kubectl apply -f infra/K8s && kubectl apply -f infra/prod-k8s
+      
+      - name: Deploy to AKS
+        uses: azure/k8s-deploy@v1
+        with:
+            manifests: ${{ env.CHART_PATH }}
+            overrides: ${{ env.CHART_OVERRIDE_PATH }}
+            namespace: default
+            registry: ${{ env.AZURE_CONTAINER_REGISTRY }}
+            project: ${{ env.PROJECT_NAME }}
+            resource-group: ${{ env.RESOURCE_GROUP }}
+            cluster-name: ${{ env.CLUSTER_NAME }}
+            registry-url: ${{ env.REGISTRY_URL }}
+            image: ${{ env.AZURE_CONTAINER_REGISTRY }}/$PROJECT_NAME:$GITHUB_SHA
+
+
+```
+- We can apply prod secrets by using this command:
+```shell
+kubectl apply -f prod-secrets.yml
+```
+
+## Setting up nginx ingress controller in Azure. 
+- Use this command for setting up nginx controller inside Azure like this 
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/cloud/deploy.yaml
+
+```
+- For added redundancy, two replicas of the NGINX ingress controllers are deployed with the --set controller.replicaCount parameter. 
+- To fully benefit from running replicas of the ingress controller, make sure there's more than one node in your AKS cluster.
+- By default, an NGINX ingress controller is created with a dynamic public IP address assignment. A common configuration requirement is to use an internal, private network and IP address. This approach allows you to restrict access to your services to internal users, with no external access.
+- Use the --set controller.service.loadBalancerIP and --set controller.service.annotations."service\.beta\.kubernetes\.io/azure-load-balancer-internal"=true parameters to assign an internal IP address to your ingress controller. 
+- Provide your own internal IP address for use with the ingress controller. 
+- Make sure that this IP address isn't already in use within your virtual network.
+- When the Kubernetes load balancer service is created for the NGINX ingress controller, an IP address is assigned under EXTERNAL-IP
+- If you browse to the external IP address at this stage, you see a 404 page displayed. This is because you still need to set up the connection to the external IP
+- To route traffic to each application, create a Kubernetes ingress resource. The ingress resource configures the rules that route traffic to one of the two applications.
+- In the following example, traffic to EXTERNAL_IP/hello-world-one is routed to the service named aks-helloworld-one. Traffic to EXTERNAL_IP/hello-world-two is routed to the aks-helloworld-two service. Traffic to EXTERNAL_IP/static is routed to the service named aks-helloworld-one for static assets.
+```yaml
+ apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello-world-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /hello-world-one(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: aks-helloworld-one
+            port:
+              number: 80
+      - path: /hello-world-two(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: aks-helloworld-two
+            port:
+              number: 80
+      - path: /(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: aks-helloworld-one
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello-world-ingress-static
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/rewrite-target: /static/$2
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /static(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: aks-helloworld-one
+            port: 
+              number: 80
+
+```
+- To see error inside a pod use these commands
+```shell
+kubectl get pods 
+
+kubectl logs **pod_name**
+
+```
+
+## Getting a Domain name and DNS 
+- We can get a domain name from GoDaddy
+- Create a DNS Zone: Go to the Azure portal and create a DNS zone for your domain
+- Retrieve Name Servers: Copy the name servers provided by Azure for your DNS zone
+- Update DNS Records: Log in to your domain registrar and update the name servers to point to the Azure name servers
+- Create an Ingress Resource: Create an Ingress resource to expose your Next.js application.
+```yaml 
+ apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nextjs-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: <your-domain-name>
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nextjs-service
+            port:
+              number: 80
+
+
+
+```
+- Verify Configuration: Use tools like nslookup or dig to verify that your domain name resolves to the load balancer's IP address
+
+
+## Adding SSL to the Ingress for Next.js application running inside AKS 
+- To add SSL to the Ingress for your Next.jsapplication running inside AKS, you can use cert-manager and Let's Encrypt
+- Add the Helm repository
+- Install Cert-Manager
+```shell
+ wget https://github.com/cert-manager/cert-manager/releases/download/v1.16.3/cert-manager.yaml
+
+kubectl apply -f cert-manager.yaml
+
+```
+- Create a ClusterIssuer resource to use Let's Encrypt:
+```yaml 
+ apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: <your-email>
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+```[_{{{CITATION{{{_1{How to create a TLS/SSL certificate with a Cert-Manager and Let's Encrypt in Azure AKS? | AKS](https://www.youtube.com/watch?v=PFCRr0hSYp8)
+
+```
+- Update your Ingress resource to include the TLS/SSL certificate (note we are updating annotations and tls)
+```yaml 
+ apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nextjs-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  tls:
+  - hosts:
+    - app.carsties.local
+    - api.carsties.local
+    - id.carsties.local
+  # Secrets get automatically created by certificate manager. 
+    secretName: nextjs-ingress-tls
+  rules:
+  - host: <your-domain-name>
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nextjs-service
+            port:
+              number: 80
+```[_{{{CITATION{{{_1{How to create a TLS/SSL certificate with a Cert-Manager and Let's Encrypt in Azure AKS? | AKS](https://www.youtube.com/watch?v=PFCRr0hSYp8)
+
+
+
+```
+- Apply the updated Ingress resource
+```shell
+ kubectl apply -f <ingress-file>.yaml
+```[_{{{CITATION{{{_1{How to create a TLS/SSL certificate with a Cert-Manager and Let's Encrypt in Azure AKS? | AKS](https://www.youtube.com/watch?v=PFCRr0hSYp8)
+
+```
+
+### In Azure, instead of using nginx we can also use Azure Application Gateway as an ingress controller also. 
+- Clone the AGIC GitHub repository:
+```shell
+ git clone https://github.com/Azure/application-gateway-kubernetes-ingress.git
+cd application-gateway-kubernetes-ingress
+
+```
+- Apply the AGIC manifests:
+```shell
+ kubectl apply -f deploy/arm/deployment.yaml
+
+
+```
+- Edit the AGIC ConfigMap: Update the ConfigMap to include your Azure credentials and Application Gateway details.
+```shell
+kubectl edit configmap -n kube-system agic
+
+```
+- Update the AppGW and Auth sections with your settings.
+- Apply the AGIC ConfigMap
+```shell
+kubectl apply -f deploy/helm/agic.yaml
+
+```
+- Create an Ingress Resource: Define an Ingress resource to expose your application.
+
+```yaml 
+ apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+  namespace: <namespace>
+  annotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+    appgw.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: <your-domain-name>
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: <service-name>
+            port:
+              number: 80
+
+
+```
+- Apply the Ingress Resource:
+```shell
+kubectl apply -f ingress.yaml
+
+```
+- An Ingress controller is a crucial component for managing and exposing services in an AKS (Azure Kubernetes Service) cluster. Here's why you need an Ingress controller:
+- 1. Centralized Traffic Management
+- Routing: Ingress controllers handle HTTP and HTTPS traffic and route it to the appropriate services within the cluster based on defined rules.
+- Load Balancing: They can distribute incoming traffic across multiple instances of your application to ensure high availability and reliability.
+- 2. Simplified Configuration
+- Single Point of Entry: Instead of managing multiple load balancers for each service, an Ingress controller provides a single point of entry for all external traffic.
+- Declarative Configuration: Ingress resources allow you to define routing rules declaratively using YAML manifests, making it easier to manage and version control your configurations.
+
+- 3. Security and SSL Termination
+- SSL/TLS Termination: Ingress controllers can handle SSL termination, offloading the work of managing SSL certificates from your applications.
+- Authentication and Authorization: They can integrate with authentication and authorization mechanisms to control access to your services.
+- 4. Scalability and Efficiency
+- Efficient Resource Usage: Ingress controllers can manage traffic more efficiently compared to using multiple external load balancers.
+- Scalable: They can handle large amounts of traffic and scale with your application as it grows.
+
+
+
+

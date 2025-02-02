@@ -10,6 +10,8 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    env:
+      continue: 'false'
     strategy:
       matrix:
         service:
@@ -18,20 +20,88 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with: 
+          fetch-depth: 2
+
+      - name: Check for changes in service path
+        run: | 
+         if git diff --quiet HEAD^ HEAD -- ${{matrix.service.path}}; then
+           echo: "No changes in ${{matrix.service.path}}. Skipping build"
+           echo: "continue=false" >> $GITHUB_ENV
+         else
+          echo "Changes detected in ${{matrix.service.path}}. Proceeding with build"
+          echo: "continue=true" >> $GITHUB_ENV
+         fi
       
       - name: Set up Docker buildx
+        if: env.continue=='true'
         uses: docker/setup-buildx-action@v2
       
       - name: Login to Docker
+        if: env.continue=='true'
         uses: docker/login-action@v3
         with:
           username: ${{secrets.DOCKER_USERNAME}}
           password: ${{secrets.DOCKER_TOKEN}}
 
       - name: Build and push docker image
+        if: env.continue=='true'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{matrix.service.path}}/Dockerfile
           push: true
           tags: ${{matrix.service.name}}:latest
+  
+  # Once we have built and pushed our images, we are going to initiate to apply the k8s configuration inside our Azure Kubernetes Cluster.
+  apply-k8s:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v1
+      
+      
+      - name: Login to ACR
+        uses: azure/docker-login@v1
+        with:
+            registry: ${{ env.AZURE_CONTAINER_REGISTRY }}
+            username: ${{ secrets.AZURE_CREDENTIALS }}
+            password: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Build and push Docker image
+        run: |
+            docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/$PROJECT_NAME:$GITHUB_SHA .
+            docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/$PROJECT_NAME:$GITHUB_SHA
+
+      - name: Azure CLI Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set up Kubernetes context
+        run: |
+          az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }} --file ./kubeconfig
+        env:
+          KUBECONFIG: ./kubeconfig
+      
+      # Alternatively we can apply our K8s deployments like this
+      - name: Apply the K8s deployments
+        run: kubectl apply -f infra/K8s && kubectl apply -f infra/prod-k8s
+      
+      - name: Deploy to AKS
+        uses: azure/k8s-deploy@v1
+        with:
+            manifests: ${{ env.CHART_PATH }}
+            overrides: ${{ env.CHART_OVERRIDE_PATH }}
+            namespace: default
+            registry: ${{ env.AZURE_CONTAINER_REGISTRY }}
+            project: ${{ env.PROJECT_NAME }}
+            resource-group: ${{ env.RESOURCE_GROUP }}
+            cluster-name: ${{ env.CLUSTER_NAME }}
+            registry-url: ${{ env.REGISTRY_URL }}
+            image: ${{ env.AZURE_CONTAINER_REGISTRY }}/$PROJECT_NAME:$GITHUB_SHA
